@@ -1,0 +1,696 @@
+/* hyl global styles: Bulma plus the small set of app tokens the components use.
+   Bulma 1.x ships both themes in one stylesheet: :root is the light theme, the
+   prefers-color-scheme media query is the system default, and the [data-theme]
+   attribute (set by src/lib/theme.ts) forces one or the other. */
+@import 'bulma/css/bulma.css';
+
+/* The palette. The brand colours and the accent wiring are scheme independent
+   and live here; the two schemes below only name the values that change.
+   NOTE: `light-dark()` is deliberately not used for the numeric tokens Bulma
+   consumes through `hsl(var(--h), var(----s), var(----l))` — a colour function
+   nested in a numeric argument is invalid CSS, so it only appeared to work
+   because the production minifier flattened it while the dev server served it
+   unresolved. */
+:root {
+  /* wisteria blue is the primary; seagrass, evergreen and dark slate grey are
+     its companions. Blue is for accents and actions, seagrass for positive
+     state, evergreen for weight, slate for anything secondary. */
+  --hyl-blue: #72a1e5;
+  --hyl-evergreen: #1b3022;
+  --hyl-slate: #395756;
+  --hyl-seagrass: #52aa8a;
+  --hyl-accent-line: linear-gradient(90deg, var(--hyl-blue), var(--hyl-seagrass));
+
+  /* Bulma: accent colours. The primary keeps the exact brand blue for fills and
+     carries dark text, so the same colour works on both schemes. */
+  --bulma-primary-h: 216deg;
+  --bulma-primary-s: 69%;
+  --bulma-primary-l: 67%;
+  --bulma-primary-invert-l: 15%;
+  --bulma-link-h: 216deg;
+  --bulma-link-s: 69%;
+  --bulma-link-l: 67%;
+  --bulma-info-h: 216deg;
+  --bulma-info-s: 69%;
+  --bulma-info-l: 67%;
+  --bulma-info-invert-l: 15%;
+  --bulma-success-h: 159deg;
+  --bulma-success-s: 35%;
+  --bulma-success-l: 40%;
+
+  /* App tokens. The track keeps its warm orange: it is the activity itself,
+     and the blue/green chrome around it stays quiet. */
+  --hyl-track-color: #fc4c02;
+  --hyl-track-bg: color-mix(in srgb, var(--hyl-blue) 5%, var(--bulma-scheme-main-ter));
+  --hyl-grid: color-mix(in srgb, var(--hyl-blue) 22%, var(--bulma-border-weak));
+  --hyl-bottom-bar-height: 3.75rem;
+  --hyl-navbar-height: 3.25rem;
+}
+
+/* Bulma stores the text colours' hue separately from the surfaces', and both
+   are read through `hsl()`, so they are declared as plain numbers here. */
+:root,
+[data-theme='light'] {
+  color-scheme: light;
+  --bulma-scheme-h: 168;
+  --bulma-scheme-s: 20%;
+  --bulma-text-h: 168;
+  --bulma-text-s: 20%;
+  --bulma-scheme-main-l: 100%;
+  --bulma-scheme-main-bis-l: 98%;
+  --bulma-scheme-main-ter-l: 96%;
+  --bulma-background-l: 94%;
+  --bulma-border-l: 88%;
+  --bulma-border-weak-l: 93%;
+  --bulma-text-strong-l: 16%;
+  --bulma-text-l: 28%;
+  --bulma-text-weak-l: 38%;
+  --bulma-link-on-scheme-l: 38%;
+  --bulma-success-on-scheme-l: 31%;
+  --bulma-body-background-color: hsl(
+    var(--bulma-scheme-h),
+    var(--bulma-scheme-s),
+    var(--bulma-background-l)
+  );
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --bulma-scheme-h: 152;
+    --bulma-scheme-s: 18%;
+    --bulma-text-h: 152;
+    --bulma-text-s: 18%;
+    --bulma-scheme-main-l: 15%;
+    --bulma-scheme-main-bis-l: 18%;
+    --bulma-scheme-main-ter-l: 21%;
+    --bulma-background-l: 11%;
+    --bulma-border-l: 30%;
+    --bulma-border-weak-l: 25%;
+    --bulma-text-strong-l: 96%;
+    --bulma-text-l: 86%;
+    --bulma-text-weak-l: 64%;
+    --bulma-link-on-scheme-l: 72%;
+    --bulma-success-on-scheme-l: 66%;
+  }
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+  --bulma-scheme-h: 152;
+  --bulma-scheme-s: 18%;
+  --bulma-text-h: 152;
+  --bulma-text-s: 18%;
+  --bulma-scheme-main-l: 15%;
+  --bulma-scheme-main-bis-l: 18%;
+  --bulma-scheme-main-ter-l: 21%;
+  --bulma-background-l: 11%;
+  --bulma-border-l: 30%;
+  --bulma-border-weak-l: 25%;
+  --bulma-text-strong-l: 96%;
+  --bulma-text-l: 86%;
+  --bulma-text-weak-l: 64%;
+  --bulma-link-on-scheme-l: 72%;
+  --bulma-success-on-scheme-l: 66%;
+}
+
+/* The palette's signature: a blue-to-seagrass rule under the navbar, echoed by
+   the underline on the current page and the marker on the current mobile tab. */
+.hyl-navbar::after {
+  content: '';
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--hyl-accent-line);
+}
+
+.hyl-brand svg {
+  color: var(--hyl-blue);
+}
+
+.hyl-navbar .navbar-item.hyl-nav-current {
+  background-color: transparent;
+  color: var(--bulma-text-strong);
+  font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--hyl-blue);
+}
+
+/* Positive state is seagrass; the action itself is the primary blue. */
+.hyl-peak-static .icon {
+  color: var(--bulma-text-weak);
+}
+
+.hyl-peak:not(.hyl-peak-static) .icon {
+  color: var(--hyl-blue);
+}
+
+.hyl-peak.is-peaked:not(.hyl-peak-static) .icon {
+  color: var(--hyl-seagrass);
+}
+
+/* Cards get a real edge so the hover tint has something to sit on. */
+.hyl-activity-card {
+  position: relative;
+  border: 1px solid var(--bulma-border);
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.hyl-activity-card:hover {
+  border-color: color-mix(in srgb, var(--hyl-blue) 55%, var(--bulma-border));
+}
+
+/* Table headers carry a wash of the primary, which is what separates a header
+   row from the values without adding another border. */
+.table thead th {
+  background-color: color-mix(in srgb, var(--hyl-blue) 7%, var(--bulma-scheme-main));
+}
+
+/* Bulma's `has-text-grey` helper is a hardcoded cool grey; the palette's weak
+   text is the same role with the right tint. */
+.has-text-grey,
+.has-text-grey-light {
+  color: var(--bulma-text-weak) !important;
+}
+
+.has-text-grey-dark {
+  color: var(--bulma-text) !important;
+}
+
+/* The active tab in a plain tab strip gets a solid rule in the primary. */
+.tabs:not(.is-toggle) ul li.is-active a {
+  border-bottom-color: var(--hyl-blue);
+  border-bottom-style: solid;
+  border-bottom-width: 2px;
+  font-weight: 600;
+}
+
+/* The athlete search popup: a modal that opens from the navbar. */
+.hyl-search {
+  width: min(30rem, 92vw);
+  margin-top: 10vh;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.hyl-search::backdrop {
+  background: rgb(9 15 12 / 45%);
+}
+
+.hyl-search-results {
+  max-height: 50vh;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hyl-search-results a {
+  display: flex;
+  align-items: center;
+  padding: 0.4rem 0.5rem;
+  border-radius: var(--bulma-radius);
+}
+
+.hyl-search-results a:hover,
+.hyl-search-results a.is-active {
+  background-color: color-mix(in srgb, var(--hyl-blue) 14%, transparent);
+}
+
+/* One avatar: a picture, or the same circle with an initial for athletes who
+   have not uploaded one. */
+.hyl-avatar {
+  display: inline-block;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.hyl-avatar-initial {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background-color: color-mix(in srgb, var(--hyl-blue) 22%, var(--bulma-scheme-main));
+  color: var(--bulma-text-strong);
+  font-weight: 600;
+  line-height: 1;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+/* The pager and the sport badge. */
+.hyl-pager {
+  margin-top: 1.5rem;
+}
+
+.hyl-pager-summary {
+  margin-bottom: 0.5rem;
+  text-align: center;
+}
+
+/* An unavailable previous/next stays in place so the row does not jump. */
+.hyl-pager-off {
+  opacity: 0.5;
+}
+
+.hyl-sport-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.hyl-sport-tag .icon {
+  color: var(--hyl-blue);
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+/* Nothing may widen the page: the fixed bottom bar and the sticky navbar are
+   positioned against the viewport, so a single overflowing child used to push
+   them out of view on phones. Wide content (tables) scrolls in its own
+   container instead. `clip` rather than `hidden` keeps position: sticky and
+   position: fixed working. */
+html {
+  overflow-x: clip;
+}
+
+body {
+  padding-bottom: 0;
+}
+
+/* On phones the fixed bottom tab bar would cover the end of the page. */
+@media (max-width: 767px) {
+  body.has-bottom-bar {
+    padding-bottom: var(--hyl-bottom-bar-height);
+  }
+}
+
+/* One navigation at a time. A wide window gets the top navbar; a narrow one
+   gets the bottom bar and no top bar at all, so the two can never be on screen
+   together. The bar stays in the document flow (sticky, not fixed) so nothing
+   can hide behind it. */
+.hyl-navbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: stretch;
+}
+
+.hyl-navbar .navbar-brand {
+  width: auto;
+  flex: 0 0 auto;
+}
+
+.hyl-navbar .navbar-menu {
+  display: flex;
+  /* Bulma only grows the menu from 1024px up; without it the right-hand group
+     stops mid-row instead of sitting flush against the edge. */
+  flex-grow: 1;
+  align-items: center;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+
+.hyl-navbar .navbar-start,
+.hyl-navbar .navbar-end {
+  display: flex;
+  align-items: center;
+}
+
+.hyl-navbar .navbar-end {
+  margin-left: auto;
+}
+
+.hyl-nav-profile {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.hyl-nav-profile:hover .hyl-avatar,
+.hyl-nav-profile:focus-visible .hyl-avatar {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--hyl-blue) 60%, transparent);
+}
+
+/* The dropdown hangs off the right edge of the navbar. */
+.hyl-account .dropdown-menu {
+  right: 0;
+  left: auto;
+}
+
+.hyl-account-name {
+  display: flex;
+  flex-direction: column;
+  cursor: default;
+}
+
+.hyl-account-name:hover {
+  background-color: transparent;
+}
+
+@media (max-width: 767px) {
+  .hyl-navbar {
+    display: none;
+  }
+
+  .hyl-bottom-bar {
+    display: block;
+  }
+
+  /* The account menu is the last tab, so its panel opens upwards. */
+  .hyl-account-tab {
+    display: flex;
+  }
+
+  .hyl-account-tab > .dropdown-trigger {
+    display: flex;
+    flex: 1 1 0;
+  }
+
+  .hyl-account-tab .hyl-bottom-tab {
+    width: 100%;
+  }
+
+  .hyl-account-tab .dropdown-menu {
+    top: auto;
+    right: 0.25rem;
+    bottom: calc(100% + 0.5rem);
+    left: auto;
+  }
+}
+
+.hyl-bottom-bar {
+  display: none;
+  position: fixed;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 30;
+  min-height: var(--hyl-bottom-bar-height);
+  border-top: 1px solid var(--bulma-border);
+  background-color: var(--bulma-scheme-main);
+}
+
+/* A flex row rather than Bulma columns: the columns' negative margins made the
+   bar wider than the screen and knocked it out of place on long pages. */
+.hyl-bottom-row {
+  display: flex;
+  align-items: stretch;
+}
+
+.hyl-bottom-row > * {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* Icon-only tabs: the label appears on the page you are on, and the row keeps
+   its height either way, so the icons never move. */
+.hyl-bottom-tab {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.15rem;
+  padding: 0.4rem 0.25rem;
+  color: var(--bulma-text-weak);
+  /* Buttons and anchors must lay out identically: a button's default line
+     height otherwise shifts its icon against the anchors beside it. */
+  font: inherit;
+  cursor: pointer;
+}
+
+.hyl-bottom-tab:hover {
+  color: var(--bulma-text-strong);
+}
+
+.hyl-bottom-tab.is-current {
+  color: var(--bulma-link-text);
+  font-weight: 600;
+}
+
+/* The current page is marked with a short rule above the icon. */
+.hyl-bottom-tab.is-current::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  inset-inline: 30%;
+  height: 2px;
+  border-radius: 0 0 2px 2px;
+  background: var(--hyl-blue);
+}
+
+.hyl-bottom-icon {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 1.5rem;
+}
+
+/* Every tab reserves the same label row, so the icons never shift between the
+   labelled tabs and the icon-only ones. */
+.hyl-bottom-label {
+  display: block;
+  height: 0.7rem;
+  font-size: 0.65rem;
+  line-height: 1;
+  visibility: hidden;
+  white-space: nowrap;
+}
+
+.hyl-bottom-tab.is-current .hyl-bottom-label {
+  visibility: visible;
+}
+
+.hyl-bottom-badge {
+  position: absolute;
+  top: -0.45rem;
+  right: -0.85rem;
+  height: 1.1rem;
+  font-size: 0.6rem;
+}
+
+/* The current page is marked in the desktop navbar too. */
+.hyl-navbar .navbar-item.hyl-nav-current {
+  color: var(--bulma-text-strong);
+  font-weight: 600;
+  background-color: var(--bulma-scheme-main-ter);
+}
+
+@media (max-width: 767px) {
+  /* Phones get the bottom bar; it is declared after the rule that hides it. */
+  .hyl-bottom-bar {
+    display: block;
+  }
+
+  /* Six columns in a phone-width table need the tighter rhythm. */
+  .table.is-fullwidth td,
+  .table.is-fullwidth th {
+    padding: 0.4em 0.45em;
+  }
+
+  .table.is-fullwidth {
+    font-size: 0.8rem;
+  }
+
+  /* Tab strips wrap instead of running off the screen: as a flex item the list
+     would otherwise keep its max-content width. */
+  .tabs ul {
+    flex-wrap: wrap;
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+/* Values in a table are one token each: wrapping a date across four lines makes
+   a table unreadable, and the container scrolls when it must. */
+.table td {
+  white-space: nowrap;
+}
+
+/* Row actions are secondary: they should not push a table past the screen. */
+@media (max-width: 767px) {
+  .table td .button {
+    padding-inline: 0.6em;
+  }
+}
+
+/* Bulma paints every `is-light` notification at a fixed 96% lightness, so on a
+   dark page they glare. Tinting the accent over the scheme keeps the meaning
+   and follows the theme in both modes. */
+.notification.is-light {
+  background-color: var(--bulma-scheme-main-ter);
+  color: var(--bulma-text);
+}
+
+.notification.is-warning.is-light,
+.notification.is-danger.is-light,
+.notification.is-success.is-light,
+.notification.is-info.is-light {
+  color: var(--bulma-text);
+}
+
+.notification.is-warning.is-light {
+  background-color: color-mix(in srgb, var(--bulma-warning) 16%, var(--bulma-scheme-main));
+}
+
+.notification.is-danger.is-light {
+  background-color: color-mix(in srgb, var(--bulma-danger) 16%, var(--bulma-scheme-main));
+}
+
+.notification.is-success.is-light {
+  background-color: color-mix(in srgb, var(--bulma-success) 16%, var(--bulma-scheme-main));
+}
+
+.notification.is-info.is-light {
+  background-color: color-mix(in srgb, var(--bulma-info) 16%, var(--bulma-scheme-main));
+}
+
+.hyl-track-preview {
+  display: block;
+  aspect-ratio: 16 / 10;
+  width: 100%;
+  /* Capping the width is what keeps the card short: at 16:10 a full-width box
+     would be taller than the rest of the card put together. */
+  max-width: 22rem;
+  margin-inline: auto;
+  border-radius: var(--bulma-radius);
+  overflow: hidden;
+}
+
+.hyl-track-preview > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* The whole card opens the activity: the overlay anchor covers every part of
+   the card that no other control claims, so a tap anywhere navigates. */
+.hyl-card-link {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+/* Controls that must keep their own click sit above the overlay. */
+.hyl-card-above {
+  position: relative;
+  z-index: 2;
+}
+
+/* The card's action row: Bulma's .level becomes a column on phones, which
+   stacked the controls, so this row is explicit. */
+.hyl-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.hyl-activity-card .card-content {
+  padding: 0.9rem 1rem;
+}
+
+.hyl-activity-card .title {
+  line-height: 1.25;
+}
+
+.hyl-track-bg {
+  background-color: var(--hyl-track-bg);
+  fill: var(--hyl-track-bg);
+}
+
+.hyl-grid-line {
+  stroke: var(--hyl-grid);
+  stroke-width: 1;
+}
+
+.hyl-track {
+  fill: none;
+  stroke: var(--hyl-track-color);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.hyl-mono {
+  font-variant-numeric: tabular-nums;
+}
+
+.hyl-clamp-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.hyl-map-full {
+  height: 100%;
+  width: 100%;
+}
+
+/* The map page owns the viewport: it is a fixed layer under the navbar, and the
+   document is told not to scroll, so nothing above it (an unverified-email
+   banner, for instance) can push it out of view or grow the page. */
+.hyl-map-page {
+  position: fixed;
+  inset: var(--hyl-navbar-height) 0 0 0;
+  z-index: 1;
+}
+
+body.hyl-no-scroll {
+  overflow: hidden;
+}
+
+.hyl-map-overlay {
+  position: absolute;
+  inset-inline: 0.75rem;
+  bottom: 0.75rem;
+  z-index: 10;
+}
+
+.hyl-suggestions {
+  position: absolute;
+  z-index: 40;
+  min-width: 12rem;
+}
+
+/* A small square image (photo thumbnails); avatars come from <Avatar>. */
+.hyl-thumb-sm {
+  width: 2rem;
+  height: 2rem;
+}
+
+.hyl-photo-thumb {
+  aspect-ratio: 1;
+  object-fit: cover;
+  width: 100%;
+}
+
+/* Phone overrides for the map layer: these have to follow the base rules above,
+   which are declared at the end of the sheet. */
+@media (max-width: 767px) {
+  /* No top bar on phones, so the map starts at the top of the window. */
+  .hyl-map-page {
+    inset: 0;
+  }
+
+  /* The bottom bar floats over the map, so the overlay clears it. */
+  .hyl-map-overlay {
+    bottom: calc(var(--hyl-bottom-bar-height) + 0.75rem);
+  }
+}

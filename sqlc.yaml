@@ -1,0 +1,13 @@
+version: "2"
+sql:
+  - engine: "sqlite"
+    schema: "internal/db/migrations"
+    queries: "internal/queries"
+    gen:
+      go:
+        package: "db"
+        out: "internal/db"
+        emit_interface: true
+        emit_empty_slices: true
+        emit_pointers_for_null_types: true
+        query_parameter_limit: 6

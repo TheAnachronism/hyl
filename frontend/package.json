@@ -1,0 +1,29 @@
+{
+  "name": "hyl-frontend",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json"
+  },
+  "dependencies": {
+    "@protomaps/basemaps": "^5.7.2",
+    "@solidjs/router": "^1.0.0",
+    "bulma": "^1.0.4",
+    "maplibre-gl": "^6.11.1",
+    "pmtiles": "^4.5.0",
+    "solid-icons": "^1.2.0",
+    "solid-js": "^1.9.15"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^6.0.3",
+    "vite": "^8.3.0",
+    "vite-plugin-solid": "^2.11.14"
+  }
+}
