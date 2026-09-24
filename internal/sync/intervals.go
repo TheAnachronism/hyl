@@ -32,9 +32,10 @@ const (
 // intervalsBaseURL is overridable for tests through IntervalsClient.BaseURL.
 const intervalsBaseURL = "https://intervals.icu"
 
-// intervalsScopes is what hyl asks for: reading activities to import and
-// writing them back to support auto-export.
-const intervalsScopes = "ACTIVITY:READ,ACTIVITY:WRITE"
+// intervalsScopes is what hyl asks for: reading activities to import. hyl only
+// ever reads from intervals.icu — imports are GETs, and activity export goes to
+// Strava — so asking for write access would be a permission it never uses.
+const intervalsScopes = "ACTIVITY:READ"
 
 // IntervalsActivity is one row of the activities listing.
 type IntervalsActivity struct {

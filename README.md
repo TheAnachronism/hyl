@@ -71,6 +71,42 @@ user (uid 10001), keeps its state in the `/data` volume and already sets
 `HYL_DATA_DIR=/data` and `HYL_LISTEN=:8080`. Pass `--build-arg VERSION=<sha>` to
 stamp a version into the binary.
 
+The binary takes one optional argument: `hyl migrate` applies pending migrations
+and exits. The server applies them on boot anyway, so this exists for container
+orchestrators that want the database prepared before the server container starts.
+
+## Kubernetes
+
+`deploy/kubernetes/hyl.jsonnet` renders the namespace, a `ReadWriteOnce` claim, a
+single-replica Deployment and an ingress:
+
+```sh
+kubectl -n hyl create secret generic hyl-secrets \
+  --from-literal=HYL_SECRET_KEY="$(openssl rand -hex 32)"
+jsonnet -S deploy/kubernetes/hyl.jsonnet > hyl.yaml
+kubectl apply -f hyl.yaml
+```
+
+The Deployment runs one replica with the `Recreate` strategy, because hyl keeps
+its state in a single SQLite file on a `ReadWriteOnce` volume: a rolling update
+would run two pods against one database.
+
+Two init containers run before the server container, and an unrecognised
+argument is an error rather than a second server:
+
+- **`migrate`** runs `hyl migrate`, applying the migrations embedded in the same
+  binary, so the schema cannot drift from the server that expects it. It costs
+  nothing once the database is current.
+- **`basemap`** extracts the configured region (Switzerland by default) from a
+  Protomaps build into `HYL_TILES_DIR`. It records what it produced in a marker
+  file and re-extracts only when the source, bounding box or max zoom change, so
+  pod restarts and new nodes reuse the previous run's archive. Both the binary it
+  downloads and the image it runs in are pinned by checksum and digest.
+
+Set `HYL_TRUSTED_PROXIES` to your pod CIDR when running behind the ingress, or
+the rate limiters and the recorded session address will see the ingress
+controller rather than the client.
+
 ## Configuration
 
 hyl is configured entirely through the environment; there is no config file and
@@ -127,6 +163,10 @@ export HYL_PMTILES_FILE=region.pmtiles
 The recipe defaults to a dated protomaps build. Protomaps prunes its old dated
 builds, so the default URL eventually 404s; pass a newer one as the optional
 third argument (`just tiles <bbox> <maxzoom> https://build.protomaps.com/<date>.pmtiles`).
+There is no `latest` alias, so check https://maps.protomaps.com/builds/ for a
+current date. On Kubernetes the `basemap` init container performs the same
+extract for you and re-runs it whenever the configured source, bounding box or
+max zoom change.
 
 ## Provider setup
 
@@ -162,7 +202,8 @@ either half missing is not registered and `/auth/<provider>` returns 404.
 - **OAuth app.** Create one in the intervals.icu developer settings, set
   `HYL_INTERVALS_CLIENT_ID` and `HYL_INTERVALS_CLIENT_SECRET`, and use the
   redirect URI `{HYL_BASE_URL}/api/connections/intervals/callback`. hyl asks for
-  the `ACTIVITY:READ` and `ACTIVITY:WRITE` scopes.
+  the `ACTIVITY:READ` scope only: it reads activities to import them and never
+  writes to intervals.icu.
 - **Webhook.** Set `HYL_INTERVALS_WEBHOOK_SECRET` to the same shared secret you
   configure on intervals' side. hyl verifies it in constant time on
   `POST /webhooks/intervals` and triggers a re-sync for the matching athlete;

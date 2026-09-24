@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -32,13 +33,62 @@ import (
 var version = "dev"
 
 func main() {
-	if err := run(); err != nil {
+	if err := run(os.Args[1:]); err != nil {
 		os.Stderr.WriteString("fatal: " + err.Error() + "\n")
 		os.Exit(1)
 	}
 }
 
-func run() error {
+// run dispatches the only two things this binary does: serve, or migrate and
+// exit. An unrecognised argument is an error rather than a server launch, so a
+// typo in an init container cannot silently start a second server.
+func run(args []string) error {
+	if len(args) == 0 {
+		return serve()
+	}
+	switch args[0] {
+	case "migrate":
+		return migrate()
+	default:
+		return fmt.Errorf("unknown command %q (this binary supports: migrate)", args[0])
+	}
+}
+
+// migrate applies every pending migration and exits. It exists for init
+// containers: the migration files are embedded in this binary, so the schema
+// they apply can never drift from the one this server expects — which is
+// exactly the risk of running a separately versioned migration tool against the
+// same database.
+//
+// The server also migrates on boot, so this is a pre-flight that moves a
+// failure out of the serving container, not a replacement for it.
+func migrate() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	log, err := logging.New(cfg.Env, cfg.LogLevel)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = log.Sync() }()
+
+	if err := cfg.EnsureDirs(); err != nil {
+		return err
+	}
+	pool, err := db.Open(cfg)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = pool.Close() }()
+	if err := db.Migrate(pool); err != nil {
+		return err
+	}
+	log.Info("migrations applied", zap.String("db", cfg.DBPath))
+	return nil
+}
+
+func serve() error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
