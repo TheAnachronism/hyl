@@ -143,6 +143,10 @@ func serve() error {
 	worker := syncpkg.NewWorker(pool, cfg, log, cipher, activityStore)
 	worker.SetExporter(syncpkg.NewExporter(pool, cfg, log, cipher))
 	activityHandlers := activity.NewHandlers(pool, activityStore, mediaHandlers, log)
+	mediaHandlers.ForViewer = func(ctx context.Context, activityID, viewerID int64) error {
+		_, err := activityHandlers.ForViewer(ctx, activityID, viewerID)
+		return err
+	}
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()
 	go worker.Run(workerCtx)
