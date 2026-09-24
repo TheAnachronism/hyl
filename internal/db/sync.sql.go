@@ -101,6 +101,21 @@ func (q *Queries) DeleteImportRulesForConnection(ctx context.Context, userID int
 	return result.RowsAffected()
 }
 
+const deletePendingExportsForTarget = `-- name: DeletePendingExportsForTarget :execrows
+DELETE FROM activity_exports
+WHERE user_id = ? AND target = ? AND status = 'pending'
+`
+
+// Pending rows are removed only for the target the disconnected provider owns.
+// Sent and errored rows stay as history. intervals.icu owns no export target.
+func (q *Queries) DeletePendingExportsForTarget(ctx context.Context, userID int64, target string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deletePendingExportsForTarget, userID, target)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deletePendingExportsForUser = `-- name: DeletePendingExportsForUser :execrows
 DELETE FROM activity_exports WHERE user_id = ? AND status = 'pending'
 `
