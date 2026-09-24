@@ -80,14 +80,3 @@ func NormalizeSport(raw string) string {
 func DefaultTitle(sport string, startedAt time.Time) string {
 	return fmt.Sprintf("%s on %s", SportLabel(sport), startedAt.UTC().Format("Mon 2 Jan 2006 15:04"))
 }
-
-// UsesPace reports whether a sport is displayed as min/km rather than km/h.
-// This is the server-side twin of the frontend's sports.ts contract.
-func UsesPace(sport string) bool {
-	switch sport {
-	case SportRun, SportWalk, SportHike:
-		return true
-	default:
-		return false
-	}
-}

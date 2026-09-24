@@ -27,21 +27,29 @@ export default function FeedPage() {
   const [loading, setLoading] = createSignal(true);
   const [error, setError] = createSignal('');
 
+  // Pager clicks can overlap, so every load carries an id and a response that
+  // is no longer the newest is dropped: the rows and the pager must describe
+  // the same page.
+  let loadId = 0;
+
   async function load(): Promise<void> {
+    const id = ++loadId;
     setLoading(true);
     setError('');
     try {
       const result = await api.get<ActivityPage>(
         `/api/activities${query({ feed: 'following', limit: PAGE_SIZE, page: page() })}`,
       );
+      if (id !== loadId) return;
       setItems(result.items);
       setCurrent(result.page);
       setTotalPages(result.totalPages);
       setTotal(result.total);
     } catch (err) {
+      if (id !== loadId) return;
       setError(err instanceof ApiError ? err.message : 'Could not load the feed.');
     } finally {
-      setLoading(false);
+      if (id === loadId) setLoading(false);
     }
   }
 

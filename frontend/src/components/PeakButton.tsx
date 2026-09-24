@@ -1,7 +1,7 @@
 import { Show, createEffect, createSignal } from 'solid-js';
 import { TbFillMountain, TbOutlineMountain } from 'solid-icons/tb';
 import type { LikeResult } from '../api.gen';
-import { api } from '../lib/api';
+import { ApiError, api } from '../lib/api';
 
 export interface PeakButtonProps {
   activityId: number;
@@ -20,6 +20,7 @@ export default function PeakButton(props: PeakButtonProps) {
   const [count, setCount] = createSignal(props.likeCount);
   const [peaked, setPeaked] = createSignal(props.likedByMe);
   const [busy, setBusy] = createSignal(false);
+  const [error, setError] = createSignal('');
 
   // Re-sync when the parent replaces its list with a fresh response.
   createEffect(() => {
@@ -30,12 +31,13 @@ export default function PeakButton(props: PeakButtonProps) {
   async function peak(): Promise<void> {
     if (peaked() || busy()) return;
     setBusy(true);
+    setError('');
     try {
       const result = await api.post<LikeResult>(`/api/activities/${props.activityId}/likes`);
       setCount(result.likeCount);
       setPeaked(result.likedByMe);
     } catch (err) {
-      console.error('could not peak activity', err);
+      setError(err instanceof ApiError ? err.message : 'Could not record the peak.');
     } finally {
       setBusy(false);
     }
@@ -54,20 +56,25 @@ export default function PeakButton(props: PeakButtonProps) {
         </span>
       }
     >
-      <button
-        type="button"
-        class="button is-small hyl-peak"
-        classList={{ 'is-peaked': peaked() }}
-        disabled={peaked() || busy()}
-        aria-pressed={peaked() ? 'true' : 'false'}
-        aria-label={`${label()} this activity`}
-        title={`${label()} this activity`}
-        onClick={() => void peak()}
-      >
-        <span class="icon is-small">{icon()}</span>
-        <span>{label()}</span>
-        <span class="hyl-mono ml-2">{count()}</span>
-      </button>
+      <div>
+        <button
+          type="button"
+          class="button is-small hyl-peak"
+          classList={{ 'is-peaked': peaked() }}
+          disabled={peaked() || busy()}
+          aria-pressed={peaked() ? 'true' : 'false'}
+          aria-label={`${label()} this activity`}
+          title={`${label()} this activity`}
+          onClick={() => void peak()}
+        >
+          <span class="icon is-small">{icon()}</span>
+          <span>{label()}</span>
+          <span class="hyl-mono ml-2">{count()}</span>
+        </button>
+        <Show when={error()}>
+          <p class="help is-danger mb-0">{error()}</p>
+        </Show>
+      </div>
     </Show>
   );
 }

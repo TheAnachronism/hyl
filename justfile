@@ -21,9 +21,9 @@ build-web:
 run:
     go run .
 
-test:
+test: build-web
     go test ./...
-vet:
+vet: build-web
     go vet ./...
 fmt:
     gofmt -w .
@@ -44,10 +44,11 @@ migrate-status:
 migrate-create name:
     goose -dir internal/db/migrations create -s {{ name }} sql
 
-tiles bbox maxzoom:
+# protomaps prunes its old dated builds, so pass a newer <date>.pmtiles URL if the default has rotted.
+tiles bbox maxzoom src='https://build.protomaps.com/20260924.pmtiles':
     mkdir -p data/tiles
     go run github.com/protomaps/go-pmtiles@v1.31.2 extract \
       --bbox={{ bbox }} --maxzoom={{ maxzoom }} --download-threads=4 \
-      https://build.protomaps.com/20260924.pmtiles data/tiles/region.pmtiles
+      {{ src }} data/tiles/region.pmtiles
 mailpit:
     docker run --rm -p 1025:1025 -p 8025:8025 axllent/mailpit

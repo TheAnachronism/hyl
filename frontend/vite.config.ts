@@ -12,7 +12,11 @@ const proxy: Record<string, string | ProxyOptions> = Object.fromEntries(
 export default defineConfig({
   plugins: [solid()],
   base: '/',
-  build: { outDir: 'dist', sourcemap: false },
+  // emptyOutDir is off because frontend/dist holds a committed .gitkeep that
+  // the Go build's //go:embed needs: wiping the directory would break the next
+  // `go build` until the web assets were built again. Stale hashed assets are
+  // harmless, and .gitignore covers the directory's contents.
+  build: { outDir: 'dist', sourcemap: false, emptyOutDir: false },
   server: { port: 5173, proxy },
   preview: { port: 4173, proxy },
 });

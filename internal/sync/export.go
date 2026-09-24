@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -19,10 +20,17 @@ import (
 
 // Export pacing and retry limits.
 const (
-	exportBatchSize     = 50
-	exportMinInterval   = time.Second
-	exportPollInterval  = 2 * time.Second
-	exportPollTimeout   = 60 * time.Second
+	exportBatchSize   = 50
+	exportMinInterval = time.Second
+	// Polling backs off geometrically from exportPollInitial to exportPollMax.
+	// Strava's mean processing time is under two seconds, so the ordinary case
+	// costs a single poll instead of the thirty an even 2s cadence would spend.
+	exportPollInitial = time.Second
+	exportPollMax     = 15 * time.Second
+	exportPollTimeout = 5 * time.Minute
+	// exportRetryFloor paces the drain after a rate limit that carried no
+	// usable retry hint.
+	exportRetryFloor    = 15 * time.Minute
 	exportMaxAttempts   = 5
 	exportTargetStrava  = "strava"
 	exportStatusPending = "pending"
@@ -45,13 +53,19 @@ type Exporter struct {
 	newClient func(accessToken string) *StravaClient
 	// sleep is overridable so tests do not wait for the pacing delays.
 	sleep func(context.Context, time.Duration)
+
+	// throttledUntil is when Strava's request budget is expected to be free
+	// again after a rate-limit response. Strava's limits are per application,
+	// so one user tripping them pauses every user's exports. It is only ever
+	// touched from the single worker goroutine, so it needs no lock.
+	throttledUntil time.Time
 }
 
 // NewExporter builds the export drainer.
 func NewExporter(pool *sql.DB, cfg config.Config, log *zap.Logger, cipher *secrets.Cipher) *Exporter {
 	return &Exporter{
 		Q: db.New(pool), Cfg: cfg, Log: log, Cipher: cipher,
-		tokenBaseURL: stravaBaseURL,
+		tokenBaseURL: stravaOAuthBase(cfg),
 		newClient:    func(token string) *StravaClient { return NewStravaClient(cfg, token) },
 		sleep:        sleepContext,
 	}
@@ -60,6 +74,9 @@ func NewExporter(pool *sql.DB, cfg config.Config, log *zap.Logger, cipher *secre
 // Drain pushes pending exports, at most one batch per call.
 func (e *Exporter) Drain(ctx context.Context) {
 	if !e.Cfg.StravaEnabled() {
+		return
+	}
+	if time.Now().Before(e.throttledUntil) {
 		return
 	}
 	pending, err := e.Q.ListPendingExports(ctx, exportBatchSize)
@@ -131,18 +148,23 @@ func (e *Exporter) exportOne(ctx context.Context, row db.ActivityExport) (stop b
 
 	client := e.newClient(accessToken)
 	upload, err := client.UploadFit(ctx, fmt.Sprintf("hyl-%d.fit", activityRow.ID),
-		titleOrFallback(activityRow), conn.ExportMessage, row.ExternalID, buffer.Bytes())
+		titleOrFallback(activityRow), conn.ExportMessage,
+		StravaSportType(externalSport(activityRow), activityRow.Sport),
+		row.ExternalID, buffer.Bytes())
 	if err != nil {
 		return e.handleProviderError(ctx, row, err)
 	}
 
 	deadline := time.Now().Add(exportPollTimeout)
+	wait := exportPollInitial
 	for {
-		status := strings.ToLower(upload.Status)
-		if strings.Contains(status, "ready") {
+		// Strava reports both a failed upload and an upload whose activity was
+		// deleted afterwards through these two status strings; neither is worth
+		// retrying, and neither is "still processing".
+		switch status := strings.ToLower(upload.Status); {
+		case strings.Contains(status, "ready"):
 			return false, e.markSent(ctx, row, upload.ActivityID)
-		}
-		if strings.Contains(status, "error") {
+		case strings.Contains(status, "error"), strings.Contains(status, "deleted"):
 			message := strings.TrimSpace(upload.Error)
 			if message == "" {
 				message = upload.Status
@@ -153,7 +175,10 @@ func (e *Exporter) exportOne(ctx context.Context, row db.ActivityExport) (stop b
 			// Still processing: keep it pending and try again next pass.
 			return false, e.reschedule(ctx, row, "strava is still processing this upload")
 		}
-		e.sleep(ctx, exportPollInterval)
+		e.sleep(ctx, wait)
+		if wait *= 2; wait > exportPollMax {
+			wait = exportPollMax
+		}
 		upload, err = client.GetUpload(ctx, upload.ID)
 		if err != nil {
 			return e.handleProviderError(ctx, row, err)
@@ -167,14 +192,35 @@ func (e *Exporter) handleProviderError(ctx context.Context, row db.ActivityExpor
 	if !errors.As(err, &providerErr) {
 		return false, err
 	}
-	if providerErr.StatusCode == 429 {
-		// Strava throttles hard: stop the whole pass and let the next one try.
-		return true, e.reschedule(ctx, row, providerErr.Message)
+	if providerErr.StatusCode == http.StatusTooManyRequests {
+		// A rate limit says nothing about the activity, so it must not spend an
+		// attempt: five throttled ticks used to fail the export permanently.
+		// Strava's budget is per application, so the whole drain pauses too.
+		e.throttle(providerErr.RetryAfter)
+		return true, e.deferRow(ctx, row, providerErr.Message)
 	}
 	if providerErr.NeedsReauthorization() {
 		return true, e.markError(ctx, row, "reauthorize")
 	}
 	return false, e.reschedule(ctx, row, providerErr.Message)
+}
+
+// throttle pauses the drain until the provider's window is expected to be free.
+func (e *Exporter) throttle(after time.Duration) {
+	if after <= 0 {
+		after = exportRetryFloor
+	}
+	if until := time.Now().Add(after); until.After(e.throttledUntil) {
+		e.throttledUntil = until
+	}
+}
+
+// deferRow keeps a row pending and records the reason without counting an
+// attempt, so a transient provider-side delay cannot exhaust the budget.
+func (e *Exporter) deferRow(ctx context.Context, row db.ActivityExport, message string) error {
+	_, err := e.Q.UpdateExportStatus(ctx, exportStatusPending, nil, row.Attempts,
+		&message, time.Now().Unix(), row.ID)
+	return err
 }
 
 func (e *Exporter) markSent(ctx context.Context, row db.ActivityExport, remoteID int64) error {
@@ -253,6 +299,15 @@ func titleOrFallback(activityRow db.Activity) string {
 		return activityRow.Title
 	}
 	return activity.DefaultTitle(activityRow.Sport, time.Unix(activityRow.StartedAt, 0).UTC())
+}
+
+// externalSport dereferences the provider's activity type, when the activity has
+// one.
+func externalSport(a db.Activity) string {
+	if a.ExternalSport == nil {
+		return ""
+	}
+	return *a.ExternalSport
 }
 
 func sleepContext(ctx context.Context, d time.Duration) {

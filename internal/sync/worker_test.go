@@ -22,11 +22,18 @@ type fakeProvider struct {
 	candidates []IntervalsActivity
 	files      map[string][]byte
 	downloads  int
+	lists      int
+	athleteIDs int
 	listErr    error
 	fileErr    error
+	athleteID  string
+	// athleteIDErr makes the resolution fail, the way a key without access
+	// would.
+	athleteIDErr error
 }
 
 func (f *fakeProvider) ListActivities(_ context.Context, _, oldest, newest string, _ int) ([]IntervalsActivity, error) {
+	f.lists++
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -40,6 +47,15 @@ func (f *fakeProvider) ListActivities(_ context.Context, _, oldest, newest strin
 		}
 	}
 	return out, nil
+}
+
+// AthleteID stands in for intervals.icu's "who owns this credential" lookup.
+func (f *fakeProvider) AthleteID(context.Context) (string, error) {
+	f.athleteIDs++
+	if f.athleteIDErr != nil {
+		return "", f.athleteIDErr
+	}
+	return f.athleteID, nil
 }
 
 func (f *fakeProvider) DownloadFit(_ context.Context, activityID string) (io.ReadCloser, error) {
@@ -60,6 +76,9 @@ func (f *fakeProvider) DownloadFit(_ context.Context, activityID string) (io.Rea
 type harnessOptions struct {
 	strava           bool
 	stravaAutoExport bool
+	// onlyStrava drops the intervals connection, so a test can observe what the
+	// worker does with an account that has nothing importable.
+	onlyStrava bool
 }
 
 // newHarness wires a worker over a temporary database with a real activity
@@ -95,19 +114,21 @@ func newHarness(t *testing.T, provider Provider, opts harnessOptions) (*Worker, 
 		t.Fatalf("create user: %v", err)
 	}
 
-	sealed, err := cipher.EncryptString("api-key")
-	if err != nil {
-		t.Fatal(err)
-	}
 	athleteID := "0"
-	// The intervals flag is always off: it has no bearing on exports, and the
-	// tests below rely on that.
-	if _, err := queries.UpsertConnection(context.Background(), db.UpsertConnectionParams{
-		UserID: user.ID, Kind: KindIntervalsAPIKey, ExternalAthleteID: &athleteID,
-		AccessTokenCipher: sealed, AutoExport: false, ExportMessage: "Imported from hyl",
-		CreatedAt: 1, UpdatedAt: 1,
-	}); err != nil {
-		t.Fatalf("create connection: %v", err)
+	if !opts.onlyStrava {
+		sealed, err := cipher.EncryptString("api-key")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The intervals flag is always off: it has no bearing on exports, and
+		// the tests below rely on that.
+		if _, err := queries.UpsertConnection(context.Background(), db.UpsertConnectionParams{
+			UserID: user.ID, Kind: KindIntervalsAPIKey, ExternalAthleteID: &athleteID,
+			AccessTokenCipher: sealed, AutoExport: false, ExportMessage: "Imported from hyl",
+			CreatedAt: 1, UpdatedAt: 1,
+		}); err != nil {
+			t.Fatalf("create connection: %v", err)
+		}
 	}
 
 	if opts.strava {
@@ -129,6 +150,48 @@ func newHarness(t *testing.T, provider Provider, opts harnessOptions) (*Worker, 
 	worker := NewWorker(pool, cfg, zap.NewNop(), cipher, store)
 	worker.newProvider = func(db.Connection, string) Provider { return provider }
 	return worker, queries, user
+}
+
+// TestStravaConnectionIsNeverImported is the regression test for the credential
+// leak: the import worker only speaks the intervals.icu API, and a Strava row's
+// stored credential is a Strava token, so the provider — which turns whatever
+// secret it is handed into an intervals API key — must never see that row.
+func TestStravaConnectionIsNeverImported(t *testing.T) {
+	provider := &fakeProvider{}
+	worker, queries, user := newHarness(t, provider, harnessOptions{strava: true, onlyStrava: true})
+
+	worker.syncPass(context.Background(), 0)
+
+	if provider.lists != 0 || provider.athleteIDs != 0 || provider.downloads != 0 {
+		t.Fatalf("the intervals provider was called for a Strava connection: lists=%d athlete_ids=%d downloads=%d",
+			provider.lists, provider.athleteIDs, provider.downloads)
+	}
+	runs, err := queries.ListRecentSyncRuns(context.Background(), user.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("a Strava connection produced %d sync runs, want 0", len(runs))
+	}
+}
+
+// TestStravaConnectionIsNotImportableInTheWindow guards the same rule one layer
+// deeper, so a future caller that reaches importWindow directly still cannot
+// leak the credential.
+func TestStravaConnectionIsNotImportableInTheWindow(t *testing.T) {
+	provider := &fakeProvider{}
+	worker, queries, user := newHarness(t, provider, harnessOptions{strava: true, onlyStrava: true})
+
+	conn, err := queries.GetConnection(context.Background(), user.ID, KindStravaOAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := worker.importWindow(context.Background(), conn, time.Now()); err == nil {
+		t.Fatal("importWindow accepted a Strava connection")
+	}
+	if provider.lists != 0 || provider.athleteIDs != 0 {
+		t.Fatalf("the provider was called for a Strava connection: lists=%d athlete_ids=%d", provider.lists, provider.athleteIDs)
+	}
 }
 
 // fitFixture builds a valid FIT payload with n points starting at a fixed time.

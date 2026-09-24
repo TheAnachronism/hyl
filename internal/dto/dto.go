@@ -80,7 +80,6 @@ func Me(u db.User, avatarMediaID int64) api.Me {
 		Bio:                  u.Bio,
 		AvatarURL:            AvatarURL(avatarMediaID),
 		EmailVerified:        u.EmailVerified,
-		IsAdmin:              u.IsAdmin,
 		ProfileVisibility:    u.ProfileVisibility,
 		ActivitiesVisibility: u.ActivitiesVisibility,
 		FollowPolicy:         u.FollowPolicy,
@@ -173,15 +172,6 @@ func IDParam(c echo.Context, name string) (int64, error) {
 		return 0, apperr.BadRequest("invalid %s", name)
 	}
 	return n, nil
-}
-
-// IntQuery reads an optional integer query parameter; 0 means "absent".
-func IntQuery(c echo.Context, name string) int64 {
-	n, err := strconv.ParseInt(c.QueryParam(name), 10, 64)
-	if err != nil || n < 0 {
-		return 0
-	}
-	return n
 }
 
 // NextBefore returns the keyset cursor for a comment or notification page that

@@ -49,19 +49,26 @@ export default function CommentList(props: CommentListProps) {
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal('');
 
+  // A reload (a posted comment) can overlap an in-flight page, so each load
+  // carries an id and a superseded response is dropped rather than applied.
+  let loadId = 0;
+
   async function load(before: number | null, append: boolean): Promise<void> {
+    const id = ++loadId;
     setLoading(true);
     setError('');
     try {
       const page = await api.get<CommentPage>(
         `/api/activities/${props.activityId}/comments${query({ limit: PAGE_SIZE, before })}`,
       );
+      if (id !== loadId) return;
       setComments((current) => (append ? [...current, ...page.items] : page.items));
       setNextBefore(page.nextBefore ?? null);
     } catch (err) {
+      if (id !== loadId) return;
       setError(err instanceof ApiError ? err.message : 'Could not load comments.');
     } finally {
-      setLoading(false);
+      if (id === loadId) setLoading(false);
     }
   }
 

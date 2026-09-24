@@ -5,6 +5,7 @@ package server
 import (
 	"database/sql"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -47,6 +48,45 @@ type Deps struct {
 	Static echo.HandlerFunc
 }
 
+// Request body bounds. Echo parses a multipart body in memory and spills
+// anything past 32 MiB to the temp directory before a handler can inspect it,
+// so an unbounded body lets one authenticated client fill the disk no matter
+// what the handler checks afterwards.
+const (
+	// bodyLimit is the ceiling for any request: the largest legitimate body is
+	// ten photos at the 20 MiB image cap.
+	bodyLimit = "201M"
+	// activityBodyLimit is one 50 MiB activity file plus multipart overhead.
+	activityBodyLimit = "55M"
+	// imageBodyLimit is one 20 MiB image plus multipart overhead.
+	imageBodyLimit = "21M"
+)
+
+// ipExtractor decides which address the rate limiters and the session audit log
+// see. Echo trusts X-Forwarded-For from anyone by default, which would let a
+// client choose its own rate-limit bucket and forge the IP recorded against a
+// session, so header trust is opt-in and limited to the configured proxies.
+func ipExtractor(trusted []string) echo.IPExtractor {
+	if len(trusted) == 0 {
+		return echo.ExtractIPDirect()
+	}
+	options := make([]echo.TrustOption, 0, len(trusted))
+	for _, entry := range trusted {
+		if _, network, err := net.ParseCIDR(entry); err == nil {
+			options = append(options, echo.TrustIPRange(network))
+			continue
+		}
+		if ip := net.ParseIP(entry); ip != nil {
+			if v4 := ip.To4(); v4 != nil {
+				options = append(options, echo.TrustIPRange(&net.IPNet{IP: v4, Mask: net.CIDRMask(32, 32)}))
+			} else {
+				options = append(options, echo.TrustIPRange(&net.IPNet{IP: ip, Mask: net.CIDRMask(128, 128)}))
+			}
+		}
+	}
+	return echo.ExtractIPFromXFFHeader(options...)
+}
+
 // New builds the echo instance.
 func New(d Deps) (*echo.Echo, error) {
 	e := echo.New()
@@ -54,8 +94,10 @@ func New(d Deps) (*echo.Echo, error) {
 	e.HidePort = true
 	e.HTTPErrorHandler = ErrorHandler(d.Log)
 	e.Validator = validator{}
+	e.IPExtractor = ipExtractor(d.Cfg.TrustedProxies)
 
 	e.Use(middleware.Recover())
+	e.Use(middleware.BodyLimit(bodyLimit))
 	e.Use(middleware.RequestID())
 	e.Use(requestLogger(d.Log))
 	e.Use(middleware.CSRFWithConfig(middleware.CSRFConfig{
@@ -143,7 +185,7 @@ func registerDeveloperRoutes(e *echo.Echo, d Deps) {
 	}
 	v1 := e.Group("/api/v1", d.Auth.RequireAPIKey, apiKeyRateLimiter())
 	v1.GET("/me", d.Developer.Me)
-	v1.POST("/activities", d.Developer.Upload)
+	v1.POST("/activities", d.Developer.Upload, middleware.BodyLimit(activityBodyLimit))
 	v1.GET("/activities", d.Developer.List)
 	v1.GET("/activities/:id", d.Developer.Get)
 }
@@ -172,12 +214,9 @@ func registerUserRoutes(e *echo.Echo, d Deps) {
 		e.DELETE("/api/users/:username/follow", d.Social.Unfollow, RequireAuth)
 		e.POST("/api/users/:username/follow/accept", d.Social.AcceptFollow, RequireAuth)
 		e.DELETE("/api/users/:username/follow/request", d.Social.RejectFollow, RequireAuth)
-		e.GET("/api/me/followers", d.Social.Followers, RequireAuth)
-		e.GET("/api/me/following", d.Social.Following, RequireAuth)
-		e.GET("/api/me/follow-requests", d.Social.FollowRequests, RequireAuth)
 	}
 	if d.Media != nil {
-		e.POST("/api/me/avatar", d.Media.UploadAvatar, RequireAuth)
+		e.POST("/api/me/avatar", d.Media.UploadAvatar, middleware.BodyLimit(imageBodyLimit), RequireAuth)
 		e.DELETE("/api/me/avatar", d.Media.DeleteAvatar, RequireAuth)
 		e.GET("/api/media/:id", d.Media.Serve)
 	}
@@ -192,7 +231,7 @@ func registerActivityRoutes(e *echo.Echo, d Deps) {
 		return
 	}
 	e.GET("/api/activities", d.Activity.List, RequireAuth)
-	e.POST("/api/activities", d.Activity.Upload, RequireAuth)
+	e.POST("/api/activities", d.Activity.Upload, middleware.BodyLimit(activityBodyLimit), RequireAuth)
 	e.GET("/api/activities/:id", d.Activity.Get)
 	e.PATCH("/api/activities/:id", d.Activity.Update, RequireAuth)
 	e.DELETE("/api/activities/:id", d.Activity.Delete, RequireAuth)
@@ -215,7 +254,6 @@ func registerSyncRoutes(e *echo.Echo, d Deps) {
 		e.GET("/api/import-rules", d.Sync.ListImportRules, RequireAuth)
 		e.PUT("/api/import-rules", d.Sync.PutImportRules, RequireAuth)
 		e.POST("/api/sync/run", d.Sync.RunSync, RequireAuth)
-		e.GET("/api/sync/status", d.Sync.Status, RequireAuth)
 		e.GET("/api/connections/strava/oauth/start", d.Sync.StartStravaOAuth, RequireAuth)
 		e.GET("/api/connections/strava/callback", d.Sync.StravaCallback, RequireAuth)
 		e.POST("/api/activities/:id/export", d.Sync.QueueActivityExport, RequireAuth)

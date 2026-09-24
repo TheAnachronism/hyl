@@ -19,8 +19,11 @@ import { loadConfig, loadSession } from './lib/session';
 
 function Layout(props: RouteSectionProps) {
   onMount(() => {
-    void loadConfig();
-    void loadSession();
+    // A failed boot request must not surface as an unhandled rejection: the app
+    // degrades to the signed-out state, and session.ts drops its memo so the
+    // next caller retries instead of reusing the rejection.
+    loadConfig().catch(() => undefined);
+    loadSession().catch(() => undefined);
   });
 
   return (

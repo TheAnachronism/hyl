@@ -29,9 +29,17 @@ func (q *Queries) CountRecentFailedRuns(ctx context.Context, userID int64, conne
 const createExport = `-- name: CreateExport :execrows
 INSERT INTO activity_exports (activity_id, user_id, target, status, external_id, created_at, updated_at)
 VALUES (?, ?, ?, 'pending', ?, ?, ?)
-ON CONFLICT (activity_id, target) DO NOTHING
+ON CONFLICT (activity_id, target) DO UPDATE SET
+    status = 'pending',
+    attempts = 0,
+    last_error = NULL,
+    updated_at = excluded.updated_at
+WHERE activity_exports.status = 'error'
 `
 
+// A row that has already been sent, or is still pending, keeps its place, so
+// the handler can report a conflict. A row that ended in error is reset, which
+// is the only way a failed export can ever be retried.
 func (q *Queries) CreateExport(ctx context.Context, activityID int64, userID int64, target string, externalID string, createdAt int64, updatedAt int64) (int64, error) {
 	result, err := q.db.ExecContext(ctx, createExport,
 		activityID,
@@ -359,10 +367,14 @@ func (q *Queries) ListRecentSyncRuns(ctx context.Context, userID int64, limit in
 
 const listSyncableConnections = `-- name: ListSyncableConnections :many
 SELECT id, user_id, kind, external_athlete_id, access_token_cipher, refresh_token_cipher, token_expires_at, auto_export, export_message, synced_from, last_success_at, last_error, next_attempt_at, created_at, updated_at FROM connections
-WHERE next_attempt_at IS NULL OR next_attempt_at <= ?
+WHERE kind IN ('intervals_oauth', 'intervals_apikey')
+  AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
 ORDER BY id
 `
 
+// Only the intervals.icu kinds are importable: the sync worker speaks the
+// intervals API, so a Strava row (whose stored credential is a Strava token)
+// must never be handed to it.
 func (q *Queries) ListSyncableConnections(ctx context.Context, nextAttemptAt *int64) ([]Connection, error) {
 	rows, err := q.db.QueryContext(ctx, listSyncableConnections, nextAttemptAt)
 	if err != nil {
@@ -400,6 +412,20 @@ func (q *Queries) ListSyncableConnections(ctx context.Context, nextAttemptAt *in
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateConnectionAthleteID = `-- name: UpdateConnectionAthleteID :execrows
+UPDATE connections
+SET external_athlete_id = ?, updated_at = ?
+WHERE id = ?
+`
+
+func (q *Queries) UpdateConnectionAthleteID(ctx context.Context, externalAthleteID *string, updatedAt int64, iD int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateConnectionAthleteID, externalAthleteID, updatedAt, iD)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const updateConnectionError = `-- name: UpdateConnectionError :execrows

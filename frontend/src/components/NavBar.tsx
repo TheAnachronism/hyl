@@ -3,7 +3,7 @@ import { Show, createEffect, createResource, createSignal } from 'solid-js';
 import { TbOutlineMountain, TbOutlineUpload } from 'solid-icons/tb';
 import AccountMenu from './AccountMenu';
 import UserSearch from './UserSearch';
-import { api } from '../lib/api';
+import { ApiError, api } from '../lib/api';
 import { currentUser, loadConfig, providerEnabled } from '../lib/session';
 
 /**
@@ -20,6 +20,7 @@ export default function NavBar() {
   const location = useLocation();
   const [resending, setResending] = createSignal(false);
   const [resent, setResent] = createSignal(false);
+  const [resendError, setResendError] = createSignal('');
 
   // The bottom bar is fixed, so the page has to reserve room for it (the rule
   // itself only applies where the bar exists).
@@ -27,7 +28,8 @@ export default function NavBar() {
     document.body.classList.toggle('has-bottom-bar', Boolean(currentUser()));
   });
 
-  void loadConfig();
+  // The config request is best-effort: the navbar renders without it.
+  loadConfig().catch(() => undefined);
 
   // Keyed on the current path so navigating anywhere refreshes the badge.
   const [unread] = createResource(
@@ -37,7 +39,9 @@ export default function NavBar() {
         const result = await api.get<{ unread: number }>('/api/notifications/count');
         return result.unread;
       } catch {
-        return 0;
+        // A failed count is not "nothing unread": undefined hides the badge
+        // instead of showing a false 0.
+        return undefined;
       }
     },
     { initialValue: 0 },
@@ -48,11 +52,13 @@ export default function NavBar() {
 
   async function resendVerification() {
     setResending(true);
+    setResendError('');
     try {
       await api.post<void>('/api/auth/verify/resend');
       setResent(true);
-    } catch {
+    } catch (err) {
       setResent(false);
+      setResendError(err instanceof ApiError ? err.message : 'Could not send the verification mail.');
     } finally {
       setResending(false);
     }
@@ -145,18 +151,23 @@ export default function NavBar() {
 
       <Show when={currentUser() && !currentUser()?.emailVerified && !resent()}>
         <div class="notification is-warning is-light mb-0" style="border-radius:0">
-          <div class="container is-flex is-align-items-center is-justify-content-space-between">
-            <span>
-              Your email address is not verified yet. Some providers and password recovery need it.
-            </span>
-            <button
-              type="button"
-              class="button is-small ml-3"
-              disabled={resending()}
-              onClick={() => void resendVerification()}
-            >
-              {resending() ? 'Sending…' : 'Resend mail'}
-            </button>
+          <div class="container">
+            <div class="is-flex is-align-items-center is-justify-content-space-between">
+              <span>
+                Your email address is not verified yet. Some providers and password recovery need it.
+              </span>
+              <button
+                type="button"
+                class="button is-small ml-3"
+                disabled={resending()}
+                onClick={() => void resendVerification()}
+              >
+                {resending() ? 'Sending…' : 'Resend mail'}
+              </button>
+            </div>
+            <Show when={resendError()}>
+              <p class="help is-danger mt-2 mb-0">{resendError()}</p>
+            </Show>
           </div>
         </div>
       </Show>

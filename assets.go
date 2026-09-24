@@ -29,7 +29,9 @@ func staticHandler() (echo.HandlerFunc, error) {
 	}
 	index, err := fs.ReadFile(dist, "index.html")
 	if err != nil {
-		return nil, err
+		// The embed compiles from the committed placeholder alone, so this is
+		// the state of a checkout whose web assets were never built.
+		return nil, errors.New("the embedded frontend has no index.html: run `just build-web` (npm --prefix frontend run build) and rebuild the binary")
 	}
 	files := http.FileServerFS(dist)
 

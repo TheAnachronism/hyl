@@ -113,6 +113,44 @@ func TestDecimateCoordsKeepsEnds(t *testing.T) {
 	}
 }
 
+func TestDecimateCoordsKeepsEachCoordinateOnce(t *testing.T) {
+	// 4001 values at a budget of 4000 gives a stride of 2, which lands exactly
+	// on the last index: appending the last value unconditionally would emit it
+	// twice and exceed the budget, while the stride already covers it.
+	coords := make([]float64, 4001)
+	for i := range coords {
+		coords[i] = float64(i)
+	}
+	out := DecimateCoords(coords, 4000)
+	if len(out) > 4000 {
+		t.Fatalf("kept %d values, want at most 4000", len(out))
+	}
+	if out[len(out)-1] != 4000 {
+		t.Fatalf("last value = %v, want the final coordinate 4000", out[len(out)-1])
+	}
+	seen := make(map[float64]int, len(out))
+	for _, value := range out {
+		seen[value]++
+	}
+	for value, count := range seen {
+		if count != 1 {
+			t.Fatalf("coordinate %v emitted %d times", value, count)
+		}
+	}
+}
+
+func TestDecimateCoordsAppendsTheLastValueOffStride(t *testing.T) {
+	// A stride that does not divide the last index still has to end on it.
+	coords := make([]float64, 401)
+	for i := range coords {
+		coords[i] = float64(i)
+	}
+	out := DecimateCoords(coords, 400)
+	if out[0] != 0 || out[len(out)-1] != 400 {
+		t.Fatalf("ends lost: %v … %v", out[0], out[len(out)-1])
+	}
+}
+
 func TestDedupeHashIsStableAcrossLocations(t *testing.T) {
 	utc := time.Date(2026, 1, 2, 8, 0, 0, 0, time.UTC)
 	amsterdam := utc.In(time.FixedZone("CET", 3600))

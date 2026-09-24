@@ -21,54 +21,6 @@ SELECT COUNT(*) FROM follows WHERE followee_id = ? AND status = 'accepted';
 -- name: CountFollowing :one
 SELECT COUNT(*) FROM follows WHERE follower_id = ? AND status = 'accepted';
 
--- name: ListFollowers :many
-SELECT u.id, u.username, u.display_name, u.bio,
-       CAST(COALESCE((SELECT m.id FROM media m WHERE m.user_id = u.id AND m.kind = 'avatar'
-                 AND m.deleted_at IS NULL ORDER BY m.id DESC LIMIT 1), 0) AS INTEGER) AS avatar_media_id,
-       EXISTS (SELECT 1 FROM follows f2 WHERE f2.follower_id = sqlc.arg(viewer_id)
-               AND f2.followee_id = u.id AND f2.status = 'accepted') AS is_following,
-       EXISTS (SELECT 1 FROM follows f3 WHERE f3.follower_id = u.id
-               AND f3.followee_id = sqlc.arg(viewer_id) AND f3.status = 'pending') AS incoming_pending,
-       EXISTS (SELECT 1 FROM follows f4 WHERE f4.follower_id = sqlc.arg(viewer_id)
-               AND f4.followee_id = u.id AND f4.status = 'pending') AS outgoing_pending
-FROM follows f
-JOIN users u ON u.id = f.follower_id
-WHERE f.followee_id = sqlc.arg(viewer_id) AND f.status = 'accepted'
-ORDER BY u.username
-LIMIT sqlc.arg(limit_count);
-
--- name: ListFollowing :many
-SELECT u.id, u.username, u.display_name, u.bio,
-       CAST(COALESCE((SELECT m.id FROM media m WHERE m.user_id = u.id AND m.kind = 'avatar'
-                 AND m.deleted_at IS NULL ORDER BY m.id DESC LIMIT 1), 0) AS INTEGER) AS avatar_media_id,
-       EXISTS (SELECT 1 FROM follows f2 WHERE f2.follower_id = sqlc.arg(viewer_id)
-               AND f2.followee_id = u.id AND f2.status = 'accepted') AS is_following,
-       EXISTS (SELECT 1 FROM follows f3 WHERE f3.follower_id = u.id
-               AND f3.followee_id = sqlc.arg(viewer_id) AND f3.status = 'pending') AS incoming_pending,
-       EXISTS (SELECT 1 FROM follows f4 WHERE f4.follower_id = sqlc.arg(viewer_id)
-               AND f4.followee_id = u.id AND f4.status = 'pending') AS outgoing_pending
-FROM follows f
-JOIN users u ON u.id = f.followee_id
-WHERE f.follower_id = sqlc.arg(viewer_id) AND f.status = 'accepted'
-ORDER BY u.username
-LIMIT sqlc.arg(limit_count);
-
--- name: ListPendingFollowRequests :many
-SELECT u.id, u.username, u.display_name, u.bio,
-       CAST(COALESCE((SELECT m.id FROM media m WHERE m.user_id = u.id AND m.kind = 'avatar'
-                 AND m.deleted_at IS NULL ORDER BY m.id DESC LIMIT 1), 0) AS INTEGER) AS avatar_media_id,
-       EXISTS (SELECT 1 FROM follows f2 WHERE f2.follower_id = sqlc.arg(viewer_id)
-               AND f2.followee_id = u.id AND f2.status = 'accepted') AS is_following,
-       EXISTS (SELECT 1 FROM follows f3 WHERE f3.follower_id = u.id
-               AND f3.followee_id = sqlc.arg(viewer_id) AND f3.status = 'pending') AS incoming_pending,
-       EXISTS (SELECT 1 FROM follows f4 WHERE f4.follower_id = sqlc.arg(viewer_id)
-               AND f4.followee_id = u.id AND f4.status = 'pending') AS outgoing_pending
-FROM follows f
-JOIN users u ON u.id = f.follower_id
-WHERE f.followee_id = sqlc.arg(viewer_id) AND f.status = 'pending'
-ORDER BY f.created_at DESC
-LIMIT sqlc.arg(limit_count);
-
 -- name: InsertLike :exec
 INSERT INTO likes (activity_id, user_id, created_at)
 VALUES (?, ?, ?)
@@ -107,13 +59,6 @@ UPDATE comments SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL;
 INSERT INTO comment_mentions (comment_id, mentioned_user_id)
 VALUES (?, ?)
 ON CONFLICT (comment_id, mentioned_user_id) DO NOTHING;
-
--- name: ListMentionedUsers :many
-SELECT u.username
-FROM comment_mentions cm
-JOIN users u ON u.id = cm.mentioned_user_id
-WHERE cm.comment_id = ?
-ORDER BY u.username;
 
 -- name: ListMentionsForComments :many
 SELECT cm.comment_id, u.username

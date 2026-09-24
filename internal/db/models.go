@@ -32,6 +32,7 @@ type Activity struct {
 	DedupeHash     string
 	CreatedAt      int64
 	UpdatedAt      int64
+	ExternalSport  *string
 }
 
 type ActivityExport struct {
@@ -217,7 +218,6 @@ type User struct {
 	Bio                  string
 	PasswordHash         *string
 	EmailVerified        bool
-	IsAdmin              bool
 	ProfileVisibility    string
 	ActivitiesVisibility string
 	FollowPolicy         string

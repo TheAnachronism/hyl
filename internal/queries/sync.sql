@@ -7,9 +7,13 @@ SELECT * FROM connections WHERE user_id = ? AND kind = ?;
 -- name: GetConnectionByExternalID :one
 SELECT * FROM connections WHERE kind = ? AND external_athlete_id = ?;
 
+-- Only the intervals.icu kinds are importable: the sync worker speaks the
+-- intervals API, so a Strava row (whose stored credential is a Strava token)
+-- must never be handed to it.
 -- name: ListSyncableConnections :many
 SELECT * FROM connections
-WHERE next_attempt_at IS NULL OR next_attempt_at <= ?
+WHERE kind IN ('intervals_oauth', 'intervals_apikey')
+  AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
 ORDER BY id;
 
 -- name: UpsertConnection :one
@@ -30,6 +34,11 @@ RETURNING *;
 -- name: UpdateConnectionTokens :execrows
 UPDATE connections
 SET access_token_cipher = ?, refresh_token_cipher = ?, token_expires_at = ?, updated_at = ?
+WHERE id = ?;
+
+-- name: UpdateConnectionAthleteID :execrows
+UPDATE connections
+SET external_athlete_id = ?, updated_at = ?
 WHERE id = ?;
 
 -- name: UpdateConnectionSettings :execrows
@@ -62,10 +71,18 @@ ON CONFLICT (user_id, connection_kind, sport) DO UPDATE
 -- name: DeleteImportRulesForConnection :execrows
 DELETE FROM import_rules WHERE user_id = ? AND connection_kind = ?;
 
+-- A row that has already been sent, or is still pending, keeps its place, so
+-- the handler can report a conflict. A row that ended in error is reset, which
+-- is the only way a failed export can ever be retried.
 -- name: CreateExport :execrows
 INSERT INTO activity_exports (activity_id, user_id, target, status, external_id, created_at, updated_at)
 VALUES (?, ?, ?, 'pending', ?, ?, ?)
-ON CONFLICT (activity_id, target) DO NOTHING;
+ON CONFLICT (activity_id, target) DO UPDATE SET
+    status = 'pending',
+    attempts = 0,
+    last_error = NULL,
+    updated_at = excluded.updated_at
+WHERE activity_exports.status = 'error';
 
 -- name: GetExport :one
 SELECT * FROM activity_exports WHERE activity_id = ? AND target = ?;

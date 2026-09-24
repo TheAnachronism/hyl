@@ -1,6 +1,6 @@
 import { useNavigate, useParams } from '@solidjs/router';
 import { For, Show, createResource, createSignal } from 'solid-js';
-import type { ActivityDetail } from '../api.gen';
+import type { ActivityDetail, ExportState } from '../api.gen';
 import CommentForm from '../components/CommentForm';
 import CommentList from '../components/CommentList';
 import PeakButton from '../components/PeakButton';
@@ -27,6 +27,13 @@ const VISIBILITY_OPTIONS = [
   { value: 'followers', label: 'Followers' },
   { value: 'only_me', label: 'Only me' },
 ];
+
+/** EXPORT_STATUS_LABELS names the export queue states the API reports. */
+const EXPORT_STATUS_LABELS: Record<string, string> = {
+  pending: 'Queued for Strava',
+  sent: 'Sent to Strava',
+  error: 'Strava export failed',
+};
 
 interface Series {
   label: string;
@@ -132,6 +139,42 @@ export default function ActivityPage() {
   const [reloadKey, setReloadKey] = createSignal(0);
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal('');
+
+  // The export queue is the owner's business alone, so the state is only read
+  // for an activity they own; for anyone else the resource stays idle.
+  const [exportState, { refetch: refetchExport }] = createResource(
+    () => {
+      const current = ready();
+      return current && current.userId === currentUser()?.id ? current.id : null;
+    },
+    (id) => api.get<ExportState>(`/api/activities/${id}/export`),
+  );
+  const [exportBusy, setExportBusy] = createSignal(false);
+  const [exportNotice, setExportNotice] = createSignal('');
+  const [exportError, setExportError] = createSignal('');
+
+  async function retryExport(): Promise<void> {
+    const current = ready();
+    if (!current || exportBusy()) return;
+    setExportBusy(true);
+    setExportNotice('');
+    setExportError('');
+    try {
+      await api.post<{ status: string }>(`/api/activities/${current.id}/export`, { target: 'strava' });
+      setExportNotice('Export queued. It will be sent to Strava shortly.');
+    } catch (err) {
+      // A 409 means it is already queued or already sent: that is the state the
+      // user wanted, not a failure.
+      if (err instanceof ApiError && err.status === 409) {
+        setExportNotice(err.message);
+      } else {
+        setExportError(err instanceof ApiError ? err.message : 'Could not queue the export.');
+      }
+    } finally {
+      setExportBusy(false);
+      void refetchExport();
+    }
+  }
 
   const streams = (): Series[] => {
     const data = ready()?.streams;
@@ -262,6 +305,35 @@ export default function ActivityPage() {
                       onInput={(event) => setDraftTitle(event.currentTarget.value)}
                     />
                   </div>
+                </div>
+              </Show>
+
+              <Show when={exportState()?.status}>
+                <div class="notification is-light py-3">
+                  <div class="is-flex is-align-items-center is-justify-content-space-between">
+                    <span class="is-size-7">
+                      {EXPORT_STATUS_LABELS[exportState()?.status ?? ''] ?? exportState()?.status}
+                    </span>
+                    <Show when={exportState()?.status === 'error'}>
+                      <button
+                        type="button"
+                        class="button is-small ml-3"
+                        disabled={exportBusy()}
+                        onClick={() => void retryExport()}
+                      >
+                        {exportBusy() ? 'Retrying…' : 'Retry export'}
+                      </button>
+                    </Show>
+                  </div>
+                  <Show when={exportState()?.status === 'error' && exportState()?.lastError}>
+                    <p class="help is-danger mt-1 mb-0">{exportState()?.lastError}</p>
+                  </Show>
+                  <Show when={exportNotice()}>
+                    <p class="help mt-1 mb-0">{exportNotice()}</p>
+                  </Show>
+                  <Show when={exportError()}>
+                    <p class="help is-danger mt-1 mb-0">{exportError()}</p>
+                  </Show>
                 </div>
               </Show>
 

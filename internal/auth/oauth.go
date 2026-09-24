@@ -138,7 +138,6 @@ func (s *Service) CompleteAuth(c echo.Context) error {
 		DisplayName:   displayNameFor(gothUser, username),
 		PasswordHash:  nil,
 		EmailVerified: true, // the provider asserted it
-		IsAdmin:       false,
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	})

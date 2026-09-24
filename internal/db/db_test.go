@@ -6,6 +6,8 @@ import (
 	"errors"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/markbeep/hyl/internal/config"
@@ -59,8 +61,38 @@ func gooseVersion(t *testing.T, pool *sql.DB) int64 {
 	return v.Int64
 }
 
+// latestMigrationVersion is the highest migration number shipped. The migration
+// test asserts "every shipped migration ran" against it instead of a literal,
+// so adding a migration does not require editing the test.
+func latestMigrationVersion(t *testing.T) int64 {
+	t.Helper()
+	entries, err := migrationsFS.ReadDir("migrations")
+	if err != nil {
+		t.Fatalf("reading the embedded migrations: %v", err)
+	}
+	var latest int64
+	for _, entry := range entries {
+		prefix, _, ok := strings.Cut(entry.Name(), "_")
+		if !ok {
+			continue
+		}
+		version, err := strconv.ParseInt(prefix, 10, 64)
+		if err != nil {
+			t.Fatalf("migration %q has no numeric prefix: %v", entry.Name(), err)
+		}
+		if version > latest {
+			latest = version
+		}
+	}
+	if latest == 0 {
+		t.Fatal("no migrations are embedded")
+	}
+	return latest
+}
+
 func TestMigrateUpIdempotentAndDown(t *testing.T) {
 	pool := openTestDB(t)
+	want := latestMigrationVersion(t)
 
 	got := tableNames(t, pool)
 	if len(got) != len(schemaTables) {
@@ -71,16 +103,16 @@ func TestMigrateUpIdempotentAndDown(t *testing.T) {
 			t.Fatalf("table %d: got %q want %q", i, got[i], name)
 		}
 	}
-	if v := gooseVersion(t, pool); v != 6 {
-		t.Fatalf("goose version = %d, want 6", v)
+	if v := gooseVersion(t, pool); v != want {
+		t.Fatalf("goose version = %d, want %d", v, want)
 	}
 
 	// A second Migrate must be a no-op.
 	if err := Migrate(pool); err != nil {
 		t.Fatalf("second Migrate: %v", err)
 	}
-	if v := gooseVersion(t, pool); v != 6 {
-		t.Fatalf("goose version after re-run = %d, want 6", v)
+	if v := gooseVersion(t, pool); v != want {
+		t.Fatalf("goose version after re-run = %d, want %d", v, want)
 	}
 
 	if err := MigrateDown(pool); err != nil {
@@ -96,8 +128,8 @@ func TestMigrateUpIdempotentAndDown(t *testing.T) {
 	if err := Migrate(pool); err != nil {
 		t.Fatalf("re-Migrate: %v", err)
 	}
-	if v := gooseVersion(t, pool); v != 6 {
-		t.Fatalf("goose version after re-up = %d, want 6", v)
+	if v := gooseVersion(t, pool); v != want {
+		t.Fatalf("goose version after re-up = %d, want %d", v, want)
 	}
 }
 
@@ -112,18 +144,18 @@ func TestGeneratedCodeRoundTrip(t *testing.T) {
 	hash := "phc-string"
 	alice, err := q.CreateUser(ctx, CreateUserParams{
 		Username: "alice", Email: "alice@example.com", DisplayName: "Alice",
-		Bio: "", PasswordHash: &hash, EmailVerified: true, IsAdmin: true,
+		Bio: "", PasswordHash: &hash, EmailVerified: true,
 		CreatedAt: 100, UpdatedAt: 100,
 	})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	if !alice.EmailVerified || !alice.IsAdmin {
+	if !alice.EmailVerified {
 		t.Fatalf("booleans lost: %+v", alice)
 	}
 	bob, err := q.CreateUser(ctx, CreateUserParams{
 		Username: "bob", Email: "bob@example.com", DisplayName: "Bob",
-		Bio: "hi", PasswordHash: nil, EmailVerified: false, IsAdmin: false,
+		Bio: "hi", PasswordHash: nil, EmailVerified: false,
 		CreatedAt: 101, UpdatedAt: 101,
 	})
 	if err != nil {

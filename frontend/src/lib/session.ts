@@ -16,11 +16,13 @@ let configPromise: Promise<ConfigResponse> | null = null;
 
 /**
  * loadSession resolves the current session exactly once; concurrent callers
- * share the same request. Pass force to re-read after a login or logout.
+ * share the same request. Pass force to re-read after a login or logout. A
+ * failed request drops the memo, so one transient error does not leave every
+ * later call sharing the same rejected promise.
  */
 export function loadSession(force = false): Promise<Me | null> {
   if (sessionPromise && !force) return sessionPromise;
-  sessionPromise = api
+  const promise = api
     .get<Me>('/api/me')
     .then((me) => {
       setCurrentUser(me);
@@ -34,17 +36,25 @@ export function loadSession(force = false): Promise<Me | null> {
       throw err;
     })
     .finally(() => setSessionLoaded(true));
-  return sessionPromise;
+  sessionPromise = promise;
+  promise.catch(() => {
+    if (sessionPromise === promise) sessionPromise = null;
+  });
+  return promise;
 }
 
 /** loadConfig fetches the public boot configuration once. */
 export function loadConfig(force = false): Promise<ConfigResponse> {
   if (configPromise && !force) return configPromise;
-  configPromise = api.get<ConfigResponse>('/api/config').then((value) => {
+  const promise = api.get<ConfigResponse>('/api/config').then((value) => {
     setConfig(value);
     return value;
   });
-  return configPromise;
+  configPromise = promise;
+  promise.catch(() => {
+    if (configPromise === promise) configPromise = null;
+  });
+  return promise;
 }
 
 /** providerEnabled reports whether an OAuth provider is configured. */

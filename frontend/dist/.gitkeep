@@ -1,0 +1,3 @@
+# The Go binary embeds frontend/dist, so the directory has to exist for the root
+# package to compile at all. This placeholder is what makes `go build` work on a
+# fresh clone; the real assets come from `just build-web`.

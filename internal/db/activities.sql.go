@@ -64,14 +64,14 @@ func (q *Queries) CountUserActivities(ctx context.Context, userID int64) (int64,
 
 const createActivity = `-- name: CreateActivity :one
 INSERT INTO activities (
-    user_id, title, description, sport, started_at, elapsed_time_s, moving_time_s,
+    user_id, title, description, sport, external_sport, started_at, elapsed_time_s, moving_time_s,
     distance_m, elevation_gain_m, elevation_loss_m, avg_speed_mps, max_speed_mps,
     avg_heart_rate, max_heart_rate, avg_cadence, max_cadence, avg_power_w, max_power_w,
     has_gps, route_hidden, visibility, source, source_ref, dedupe_hash, created_at, updated_at
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 )
-RETURNING id, user_id, title, description, sport, started_at, elapsed_time_s, moving_time_s, distance_m, elevation_gain_m, elevation_loss_m, avg_speed_mps, max_speed_mps, avg_heart_rate, max_heart_rate, avg_cadence, max_cadence, avg_power_w, max_power_w, has_gps, route_hidden, visibility, source, source_ref, dedupe_hash, created_at, updated_at
+RETURNING id, user_id, title, description, sport, started_at, elapsed_time_s, moving_time_s, distance_m, elevation_gain_m, elevation_loss_m, avg_speed_mps, max_speed_mps, avg_heart_rate, max_heart_rate, avg_cadence, max_cadence, avg_power_w, max_power_w, has_gps, route_hidden, visibility, source, source_ref, dedupe_hash, created_at, updated_at, external_sport
 `
 
 type CreateActivityParams struct {
@@ -79,6 +79,7 @@ type CreateActivityParams struct {
 	Title          string
 	Description    string
 	Sport          string
+	ExternalSport  *string
 	StartedAt      int64
 	ElapsedTimeS   int64
 	MovingTimeS    int64
@@ -109,6 +110,7 @@ func (q *Queries) CreateActivity(ctx context.Context, arg CreateActivityParams) 
 		arg.Title,
 		arg.Description,
 		arg.Sport,
+		arg.ExternalSport,
 		arg.StartedAt,
 		arg.ElapsedTimeS,
 		arg.MovingTimeS,
@@ -161,6 +163,7 @@ func (q *Queries) CreateActivity(ctx context.Context, arg CreateActivityParams) 
 		&i.DedupeHash,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ExternalSport,
 	)
 	return i, err
 }
@@ -189,7 +192,7 @@ func (q *Queries) DeleteActivity(ctx context.Context, id int64) (int64, error) {
 }
 
 const getActivity = `-- name: GetActivity :one
-SELECT id, user_id, title, description, sport, started_at, elapsed_time_s, moving_time_s, distance_m, elevation_gain_m, elevation_loss_m, avg_speed_mps, max_speed_mps, avg_heart_rate, max_heart_rate, avg_cadence, max_cadence, avg_power_w, max_power_w, has_gps, route_hidden, visibility, source, source_ref, dedupe_hash, created_at, updated_at FROM activities WHERE id = ?
+SELECT id, user_id, title, description, sport, started_at, elapsed_time_s, moving_time_s, distance_m, elevation_gain_m, elevation_loss_m, avg_speed_mps, max_speed_mps, avg_heart_rate, max_heart_rate, avg_cadence, max_cadence, avg_power_w, max_power_w, has_gps, route_hidden, visibility, source, source_ref, dedupe_hash, created_at, updated_at, external_sport FROM activities WHERE id = ?
 `
 
 func (q *Queries) GetActivity(ctx context.Context, id int64) (Activity, error) {
@@ -223,12 +226,13 @@ func (q *Queries) GetActivity(ctx context.Context, id int64) (Activity, error) {
 		&i.DedupeHash,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ExternalSport,
 	)
 	return i, err
 }
 
 const getActivityByDedupe = `-- name: GetActivityByDedupe :one
-SELECT id, user_id, title, description, sport, started_at, elapsed_time_s, moving_time_s, distance_m, elevation_gain_m, elevation_loss_m, avg_speed_mps, max_speed_mps, avg_heart_rate, max_heart_rate, avg_cadence, max_cadence, avg_power_w, max_power_w, has_gps, route_hidden, visibility, source, source_ref, dedupe_hash, created_at, updated_at FROM activities WHERE user_id = ? AND dedupe_hash = ?
+SELECT id, user_id, title, description, sport, started_at, elapsed_time_s, moving_time_s, distance_m, elevation_gain_m, elevation_loss_m, avg_speed_mps, max_speed_mps, avg_heart_rate, max_heart_rate, avg_cadence, max_cadence, avg_power_w, max_power_w, has_gps, route_hidden, visibility, source, source_ref, dedupe_hash, created_at, updated_at, external_sport FROM activities WHERE user_id = ? AND dedupe_hash = ?
 `
 
 func (q *Queries) GetActivityByDedupe(ctx context.Context, userID int64, dedupeHash string) (Activity, error) {
@@ -262,12 +266,13 @@ func (q *Queries) GetActivityByDedupe(ctx context.Context, userID int64, dedupeH
 		&i.DedupeHash,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ExternalSport,
 	)
 	return i, err
 }
 
 const getActivityBySourceRef = `-- name: GetActivityBySourceRef :one
-SELECT id, user_id, title, description, sport, started_at, elapsed_time_s, moving_time_s, distance_m, elevation_gain_m, elevation_loss_m, avg_speed_mps, max_speed_mps, avg_heart_rate, max_heart_rate, avg_cadence, max_cadence, avg_power_w, max_power_w, has_gps, route_hidden, visibility, source, source_ref, dedupe_hash, created_at, updated_at FROM activities WHERE user_id = ? AND source = ? AND source_ref = ?
+SELECT id, user_id, title, description, sport, started_at, elapsed_time_s, moving_time_s, distance_m, elevation_gain_m, elevation_loss_m, avg_speed_mps, max_speed_mps, avg_heart_rate, max_heart_rate, avg_cadence, max_cadence, avg_power_w, max_power_w, has_gps, route_hidden, visibility, source, source_ref, dedupe_hash, created_at, updated_at, external_sport FROM activities WHERE user_id = ? AND source = ? AND source_ref = ?
 `
 
 func (q *Queries) GetActivityBySourceRef(ctx context.Context, userID int64, source string, sourceRef *string) (Activity, error) {
@@ -301,6 +306,7 @@ func (q *Queries) GetActivityBySourceRef(ctx context.Context, userID int64, sour
 		&i.DedupeHash,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ExternalSport,
 	)
 	return i, err
 }
@@ -640,7 +646,7 @@ const updateActivity = `-- name: UpdateActivity :one
 UPDATE activities
 SET title = ?, description = ?, sport = ?, visibility = ?, route_hidden = ?, updated_at = ?
 WHERE id = ?
-RETURNING id, user_id, title, description, sport, started_at, elapsed_time_s, moving_time_s, distance_m, elevation_gain_m, elevation_loss_m, avg_speed_mps, max_speed_mps, avg_heart_rate, max_heart_rate, avg_cadence, max_cadence, avg_power_w, max_power_w, has_gps, route_hidden, visibility, source, source_ref, dedupe_hash, created_at, updated_at
+RETURNING id, user_id, title, description, sport, started_at, elapsed_time_s, moving_time_s, distance_m, elevation_gain_m, elevation_loss_m, avg_speed_mps, max_speed_mps, avg_heart_rate, max_heart_rate, avg_cadence, max_cadence, avg_power_w, max_power_w, has_gps, route_hidden, visibility, source, source_ref, dedupe_hash, created_at, updated_at, external_sport
 `
 
 type UpdateActivityParams struct {
@@ -692,6 +698,7 @@ func (q *Queries) UpdateActivity(ctx context.Context, arg UpdateActivityParams) 
 		&i.DedupeHash,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ExternalSport,
 	)
 	return i, err
 }

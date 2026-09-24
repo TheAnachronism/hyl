@@ -55,6 +55,12 @@ func (h *Handlers) StravaCallback(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	if !tokens.GrantsActivityWrite() {
+		// The athlete can untick activity:write on the consent screen. Without
+		// it every upload is rejected, so refusing the connection now beats a
+		// connection that looks healthy and silently fails every export.
+		return apperr.BadRequest("Strava did not grant the activity:write permission, so hyl cannot upload activities")
+	}
 	access, err := h.Cipher.EncryptString(tokens.AccessToken)
 	if err != nil {
 		return err

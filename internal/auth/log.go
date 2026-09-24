@@ -16,8 +16,14 @@ func safeNext(next string) string {
 	if next == "" || !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
 		return ""
 	}
-	if strings.ContainsAny(next, "\\\r\n") {
-		return ""
+	for _, r := range next {
+		// Browsers strip ASCII tab, newline and carriage return before parsing a
+		// URL, so "/%09/evil.com" would resolve to the protocol-relative
+		// "//evil.com". Reject every control character, and a backslash, which
+		// several parsers also fold into a slash.
+		if r < 0x20 || r == 0x7f || r == '\\' {
+			return ""
+		}
 	}
 	return next
 }

@@ -9,24 +9,13 @@ import (
 	"context"
 )
 
-const countUsers = `-- name: CountUsers :one
-SELECT COUNT(*) FROM users
-`
-
-func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countUsers)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (
-    username, email, display_name, bio, password_hash, email_verified, is_admin, created_at, updated_at
+    username, email, display_name, bio, password_hash, email_verified, created_at, updated_at
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?
 )
-RETURNING id, username, email, display_name, bio, password_hash, email_verified, is_admin, profile_visibility, activities_visibility, follow_policy, mention_policy, trim_scope, trim_radius_m, created_at, updated_at
+RETURNING id, username, email, display_name, bio, password_hash, email_verified, profile_visibility, activities_visibility, follow_policy, mention_policy, trim_scope, trim_radius_m, created_at, updated_at
 `
 
 type CreateUserParams struct {
@@ -36,7 +25,6 @@ type CreateUserParams struct {
 	Bio           string
 	PasswordHash  *string
 	EmailVerified bool
-	IsAdmin       bool
 	CreatedAt     int64
 	UpdatedAt     int64
 }
@@ -49,7 +37,6 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		arg.Bio,
 		arg.PasswordHash,
 		arg.EmailVerified,
-		arg.IsAdmin,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
@@ -62,7 +49,6 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.Bio,
 		&i.PasswordHash,
 		&i.EmailVerified,
-		&i.IsAdmin,
 		&i.ProfileVisibility,
 		&i.ActivitiesVisibility,
 		&i.FollowPolicy,
@@ -87,7 +73,7 @@ func (q *Queries) EmailTaken(ctx context.Context, email string) (int64, error) {
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, username, email, display_name, bio, password_hash, email_verified, is_admin, profile_visibility, activities_visibility, follow_policy, mention_policy, trim_scope, trim_radius_m, created_at, updated_at FROM users WHERE email = ?
+SELECT id, username, email, display_name, bio, password_hash, email_verified, profile_visibility, activities_visibility, follow_policy, mention_policy, trim_scope, trim_radius_m, created_at, updated_at FROM users WHERE email = ?
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
@@ -101,7 +87,6 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 		&i.Bio,
 		&i.PasswordHash,
 		&i.EmailVerified,
-		&i.IsAdmin,
 		&i.ProfileVisibility,
 		&i.ActivitiesVisibility,
 		&i.FollowPolicy,
@@ -115,7 +100,7 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, username, email, display_name, bio, password_hash, email_verified, is_admin, profile_visibility, activities_visibility, follow_policy, mention_policy, trim_scope, trim_radius_m, created_at, updated_at FROM users WHERE id = ?
+SELECT id, username, email, display_name, bio, password_hash, email_verified, profile_visibility, activities_visibility, follow_policy, mention_policy, trim_scope, trim_radius_m, created_at, updated_at FROM users WHERE id = ?
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id int64) (User, error) {
@@ -129,7 +114,6 @@ func (q *Queries) GetUserByID(ctx context.Context, id int64) (User, error) {
 		&i.Bio,
 		&i.PasswordHash,
 		&i.EmailVerified,
-		&i.IsAdmin,
 		&i.ProfileVisibility,
 		&i.ActivitiesVisibility,
 		&i.FollowPolicy,
@@ -143,7 +127,7 @@ func (q *Queries) GetUserByID(ctx context.Context, id int64) (User, error) {
 }
 
 const getUserByUsername = `-- name: GetUserByUsername :one
-SELECT id, username, email, display_name, bio, password_hash, email_verified, is_admin, profile_visibility, activities_visibility, follow_policy, mention_policy, trim_scope, trim_radius_m, created_at, updated_at FROM users WHERE username = ?
+SELECT id, username, email, display_name, bio, password_hash, email_verified, profile_visibility, activities_visibility, follow_policy, mention_policy, trim_scope, trim_radius_m, created_at, updated_at FROM users WHERE username = ?
 `
 
 func (q *Queries) GetUserByUsername(ctx context.Context, username string) (User, error) {
@@ -157,7 +141,6 @@ func (q *Queries) GetUserByUsername(ctx context.Context, username string) (User,
 		&i.Bio,
 		&i.PasswordHash,
 		&i.EmailVerified,
-		&i.IsAdmin,
 		&i.ProfileVisibility,
 		&i.ActivitiesVisibility,
 		&i.FollowPolicy,
@@ -183,7 +166,7 @@ func (q *Queries) MarkEmailVerified(ctx context.Context, updatedAt int64, iD int
 }
 
 const searchUsers = `-- name: SearchUsers :many
-SELECT id, username, email, display_name, bio, password_hash, email_verified, is_admin, profile_visibility, activities_visibility, follow_policy, mention_policy, trim_scope, trim_radius_m, created_at, updated_at FROM users
+SELECT id, username, email, display_name, bio, password_hash, email_verified, profile_visibility, activities_visibility, follow_policy, mention_policy, trim_scope, trim_radius_m, created_at, updated_at FROM users
 WHERE username LIKE CAST(?1 AS TEXT) || '%' OR display_name LIKE CAST(?1 AS TEXT) || '%'
 ORDER BY username
 LIMIT ?2
@@ -206,7 +189,6 @@ func (q *Queries) SearchUsers(ctx context.Context, query string, limitCount int6
 			&i.Bio,
 			&i.PasswordHash,
 			&i.EmailVerified,
-			&i.IsAdmin,
 			&i.ProfileVisibility,
 			&i.ActivitiesVisibility,
 			&i.FollowPolicy,
@@ -263,7 +245,7 @@ UPDATE users
 SET profile_visibility = ?, activities_visibility = ?, follow_policy = ?, mention_policy = ?,
     trim_scope = ?, trim_radius_m = ?, updated_at = ?
 WHERE id = ?
-RETURNING id, username, email, display_name, bio, password_hash, email_verified, is_admin, profile_visibility, activities_visibility, follow_policy, mention_policy, trim_scope, trim_radius_m, created_at, updated_at
+RETURNING id, username, email, display_name, bio, password_hash, email_verified, profile_visibility, activities_visibility, follow_policy, mention_policy, trim_scope, trim_radius_m, created_at, updated_at
 `
 
 type UpdateUserPrivacyParams struct {
@@ -297,7 +279,6 @@ func (q *Queries) UpdateUserPrivacy(ctx context.Context, arg UpdateUserPrivacyPa
 		&i.Bio,
 		&i.PasswordHash,
 		&i.EmailVerified,
-		&i.IsAdmin,
 		&i.ProfileVisibility,
 		&i.ActivitiesVisibility,
 		&i.FollowPolicy,
@@ -314,7 +295,7 @@ const updateUserProfile = `-- name: UpdateUserProfile :one
 UPDATE users
 SET display_name = ?, bio = ?, updated_at = ?
 WHERE id = ?
-RETURNING id, username, email, display_name, bio, password_hash, email_verified, is_admin, profile_visibility, activities_visibility, follow_policy, mention_policy, trim_scope, trim_radius_m, created_at, updated_at
+RETURNING id, username, email, display_name, bio, password_hash, email_verified, profile_visibility, activities_visibility, follow_policy, mention_policy, trim_scope, trim_radius_m, created_at, updated_at
 `
 
 func (q *Queries) UpdateUserProfile(ctx context.Context, displayName string, bio string, updatedAt int64, iD int64) (User, error) {
@@ -333,7 +314,6 @@ func (q *Queries) UpdateUserProfile(ctx context.Context, displayName string, bio
 		&i.Bio,
 		&i.PasswordHash,
 		&i.EmailVerified,
-		&i.IsAdmin,
 		&i.ProfileVisibility,
 		&i.ActivitiesVisibility,
 		&i.FollowPolicy,

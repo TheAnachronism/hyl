@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"go.uber.org/zap"
 
@@ -65,6 +67,60 @@ func ingestedFIT(t *testing.T, start time.Time, distance float64) []byte {
 // TestIngestCallsExportQueueOnce pins the contract every ingestion path relies
 // on: the hook fires exactly once, for the stored activity, and not for a
 // duplicate the guards refused.
+func TestTruncateStringKeepsValidUTF8(t *testing.T) {
+	// The 120-byte title limit lands inside this emoji when it follows 119 ASCII
+	// bytes, which used to store the rune's leading bytes and corrupt the value.
+	title := strings.Repeat("a", 119) + "🚴 more"
+	cut := truncateString(title, 120)
+	if !utf8.ValidString(cut) {
+		t.Fatalf("truncateString produced invalid UTF-8: %q", cut)
+	}
+	if len(cut) > 120 {
+		t.Fatalf("truncated value is %d bytes, want at most 120", len(cut))
+	}
+	if !strings.HasPrefix(title, cut) {
+		t.Fatalf("truncated value %q is not a prefix of the input", cut)
+	}
+
+	// A value that fits is returned untouched.
+	if got := truncateString("short", 120); got != "short" {
+		t.Fatalf("short value changed: %q", got)
+	}
+	// An all-ASCII value is cut exactly at the limit.
+	if got := truncateString(strings.Repeat("b", 200), 120); len(got) != 120 {
+		t.Fatalf("ascii cut to %d bytes, want 120", len(got))
+	}
+}
+
+func TestOrderChronologicallySortsSamplesAndStart(t *testing.T) {
+	base := time.Date(2026, 3, 1, 7, 0, 0, 0, time.UTC)
+	// A GPX can hold several track segments, and they are not guaranteed to be
+	// in order; the second sample here precedes the first.
+	parsed := ParsedActivity{
+		StartedAt: base.Add(20 * time.Second),
+		Samples: []Sample{
+			{T: base.Add(20 * time.Second)},
+			{T: base},
+			{T: base.Add(10 * time.Second)},
+		},
+	}
+	got := orderChronologically(parsed)
+	for i := 1; i < len(got.Samples); i++ {
+		if got.Samples[i].T.Before(got.Samples[i-1].T) {
+			t.Fatalf("samples are not ascending at %d: %v then %v", i, got.Samples[i-1].T, got.Samples[i].T)
+		}
+	}
+	if !got.StartedAt.Equal(base) {
+		t.Fatalf("start = %v, want the earliest sample %v", got.StartedAt, base)
+	}
+	points := SamplePoints(got.StartedAt, got.Samples)
+	for _, point := range points {
+		if point.ElapsedS < 0 {
+			t.Fatalf("negative elapsed time %d at seq %d", point.ElapsedS, point.Seq)
+		}
+	}
+}
+
 func TestIngestCallsExportQueueOnce(t *testing.T) {
 	store, _, userID := newStoreForTest(t)
 	ctx := context.Background()

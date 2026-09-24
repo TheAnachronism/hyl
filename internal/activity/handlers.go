@@ -301,6 +301,53 @@ func (h *Handlers) Delete(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+// DeleteProviderActivity removes an activity that its provider reports as
+// deleted. The user-facing delete resolves the activity by route id; a webhook
+// only knows the provider's own identifier, so this resolves by provider
+// identity instead. It writes the same tombstone, which is what stops the next
+// import pass from pulling the activity straight back in.
+func (h *Handlers) DeleteProviderActivity(ctx context.Context, ownerID int64, source, sourceRef string) error {
+	if source == "" || sourceRef == "" {
+		return nil
+	}
+	activity, err := h.Q.GetActivityBySourceRef(ctx, ownerID, source, &sourceRef)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Never imported, or already gone: nothing to propagate.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := h.deleteWithTombstone(ctx, activity); err != nil {
+		return err
+	}
+	if h.Media != nil {
+		h.Media.RemoveActivityMedia(ctx, activity.ID)
+	}
+	h.Log.Info("removed an activity deleted at its source",
+		zap.Int64("user_id", ownerID), zap.String("source", source), zap.String("source_ref", sourceRef))
+	return nil
+}
+
+// deleteWithTombstone removes one activity together with the record that its
+// dedupe hash was deleted on purpose.
+func (h *Handlers) deleteWithTombstone(ctx context.Context, activity db.Activity) error {
+	tx, err := h.Pool.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	queries := h.Q.WithTx(tx)
+	if err := queries.CreateTombstone(ctx, activity.UserID, activity.DedupeHash, time.Now().Unix()); err != nil {
+		return err
+	}
+	if _, err := queries.DeleteActivity(ctx, activity.ID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // page runs one list query and renders every row, sharing the point, media and
 // privacy work across the page.
 func (h *Handlers) page(ctx context.Context, params db.ListActivitiesParams) ([]api.ActivitySummary, error) {

@@ -109,8 +109,8 @@ func run() error {
 		Social:       social.New(pool, log),
 		Media:        mediaHandlers,
 		Sync:         syncpkg.NewHandlers(pool, cfg, log, cipher, worker),
-		Webhooks:     webhooks.NewIntervals(pool, cfg, log, worker),
-		StravaEvents: webhooks.NewStrava(pool, cfg, log),
+		Webhooks:     webhooks.NewIntervals(pool, cfg, log, worker, activityHandlers),
+		StravaEvents: webhooks.NewStrava(pool, cfg, log, cipher),
 		Static:       static,
 	})
 	if err != nil {

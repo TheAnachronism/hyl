@@ -9,9 +9,9 @@ SELECT * FROM users WHERE email = ?;
 
 -- name: CreateUser :one
 INSERT INTO users (
-    username, email, display_name, bio, password_hash, email_verified, is_admin, created_at, updated_at
+    username, email, display_name, bio, password_hash, email_verified, created_at, updated_at
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?
 )
 RETURNING *;
 
@@ -42,9 +42,6 @@ SELECT COUNT(*) FROM users WHERE username = ?;
 
 -- name: EmailTaken :one
 SELECT COUNT(*) FROM users WHERE email = ?;
-
--- name: CountUsers :one
-SELECT COUNT(*) FROM users;
 
 -- name: SearchUsers :many
 SELECT * FROM users

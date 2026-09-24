@@ -1,11 +1,11 @@
 -- name: CreateActivity :one
 INSERT INTO activities (
-    user_id, title, description, sport, started_at, elapsed_time_s, moving_time_s,
+    user_id, title, description, sport, external_sport, started_at, elapsed_time_s, moving_time_s,
     distance_m, elevation_gain_m, elevation_loss_m, avg_speed_mps, max_speed_mps,
     avg_heart_rate, max_heart_rate, avg_cadence, max_cadence, avg_power_w, max_power_w,
     has_gps, route_hidden, visibility, source, source_ref, dedupe_hash, created_at, updated_at
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 )
 RETURNING *;
 

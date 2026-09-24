@@ -5,7 +5,9 @@ RUN npm ci --no-audit --no-fund
 COPY frontend/ ./
 RUN npm run typecheck && npm run build
 
-FROM golang:1.27-alpine AS build
+# The build and runtime stages must stay on the same Alpine series: libvips is
+# linked by CGO here and loaded again in the runtime image.
+FROM golang:1.27-alpine3.24 AS build
 ARG VERSION=dev
 RUN apk add --no-cache build-base pkgconf vips-dev
 WORKDIR /src
@@ -15,7 +17,7 @@ COPY . .
 COPY --from=web /src/frontend/dist ./frontend/dist
 RUN CGO_ENABLED=1 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/hyl .
 
-FROM alpine:3.22
+FROM alpine:3.24
 RUN apk add --no-cache vips vips-heif ca-certificates tzdata \
     && adduser -D -u 10001 hyl && mkdir -p /data && chown -R hyl /data
 COPY --from=build /out/hyl /usr/local/bin/hyl

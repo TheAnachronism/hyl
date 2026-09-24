@@ -19,9 +19,37 @@ import (
 	"github.com/markbeep/hyl/internal/secrets"
 )
 
-// stravaBaseURL is overridable so the export path can be tested without an
-// account: Strava requires a subscription and a single-athlete app.
-const stravaBaseURL = "https://www.strava.com"
+// Strava serves its REST API and its OAuth endpoints from separate bases as of
+// the announced 2027-01-04 migration (api-v3.strava.com for the API, the
+// existing host for OAuth). Both are settings rather than constants so an
+// operator can follow that move without recompiling.
+const (
+	defaultStravaAPIBase   = "https://www.strava.com/api/v3"
+	defaultStravaOAuthBase = "https://www.strava.com"
+)
+
+// stravaAPIBase resolves the configured API base, which includes the /api/v3
+// path prefix that the current host carries and the future host drops.
+func stravaAPIBase(cfg config.Config) string {
+	if cfg.StravaAPIBase != "" {
+		return strings.TrimSuffix(cfg.StravaAPIBase, "/")
+	}
+	return defaultStravaAPIBase
+}
+
+// stravaOAuthBase resolves the configured OAuth base: authorize, token and
+// revoke live here.
+func stravaOAuthBase(cfg config.Config) string {
+	if cfg.StravaOAuthBase != "" {
+		return strings.TrimSuffix(cfg.StravaOAuthBase, "/")
+	}
+	return defaultStravaOAuthBase
+}
+
+// tokenHTTPClient bounds every OAuth token call. The sync worker owns one
+// goroutine, so a provider that accepts a connection and then trickles bytes
+// must not be able to park imports and exports for every user.
+var tokenHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 // stravaRefreshWindow is how long before expiry a token is refreshed.
 const stravaRefreshWindow = 3600
@@ -31,7 +59,8 @@ const stravaScope = "activity:write"
 
 // StravaClient talks to the Strava v3 API with a stored OAuth token.
 type StravaClient struct {
-	BaseURL      string
+	APIBase      string
+	OAuthBase    string
 	ClientID     string
 	ClientSecret string
 	AccessToken  string
@@ -41,7 +70,8 @@ type StravaClient struct {
 // NewStravaClient builds a client for one stored connection.
 func NewStravaClient(cfg config.Config, accessToken string) *StravaClient {
 	return &StravaClient{
-		BaseURL:      stravaBaseURL,
+		APIBase:      stravaAPIBase(cfg),
+		OAuthBase:    stravaOAuthBase(cfg),
 		ClientID:     cfg.StravaClientID,
 		ClientSecret: cfg.StravaClientSecret,
 		AccessToken:  accessToken,
@@ -55,20 +85,32 @@ type StravaTokens struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 	ExpiresAt    int64  `json:"expires_at"`
-	Athlete      struct {
+	// Scope is what the athlete actually granted, which may be less than what
+	// was requested: the consent screen lets them untick a scope.
+	Scope   string `json:"scope"`
+	Athlete struct {
 		ID int64 `json:"id"`
 	} `json:"athlete"`
 }
 
-// ExchangeStravaCode trades an authorization code for tokens.
-func ExchangeStravaCode(ctx context.Context, cfg config.Config, code string) (StravaTokens, error) {
-	return exchangeStravaCode(ctx, stravaBaseURL, cfg, code)
+// GrantsActivityWrite reports whether Strava says the upload scope was granted.
+// The field has been part of the token response since 2026-04-23; an empty
+// value means the response predates it, which grants benefit of the doubt.
+func (t StravaTokens) GrantsActivityWrite() bool {
+	if strings.TrimSpace(t.Scope) == "" {
+		return true
+	}
+	for _, scope := range strings.FieldsFunc(t.Scope, func(r rune) bool { return r == ',' || r == ' ' }) {
+		if scope == stravaScope {
+			return true
+		}
+	}
+	return false
 }
 
-// RefreshStravaToken rotates an expired access token. Strava rotates the refresh
-// token too, so the caller must persist whatever comes back immediately.
-func RefreshStravaToken(ctx context.Context, cfg config.Config, refreshToken string) (StravaTokens, error) {
-	return refreshStravaToken(ctx, stravaBaseURL, cfg, refreshToken)
+// ExchangeStravaCode trades an authorization code for tokens.
+func ExchangeStravaCode(ctx context.Context, cfg config.Config, code string) (StravaTokens, error) {
+	return exchangeStravaCode(ctx, stravaOAuthBase(cfg), cfg, code)
 }
 
 // exchangeStravaCode and refreshStravaToken take the base URL explicitly so the
@@ -91,6 +133,16 @@ func refreshStravaToken(ctx context.Context, baseURL string, cfg config.Config, 
 	return stravaTokenRequest(ctx, baseURL, form)
 }
 
+// CheckStravaRefresh rotates a stored Strava refresh token for a caller that
+// only needs to know whether the connection is still alive. It exists because
+// Strava signs nothing it sends to a webhook, while its token endpoint is
+// authoritative: a revoked connection's refresh token is rejected outright,
+// whereas a live one is simply rotated (and the caller must persist the pair,
+// since Strava invalidates the previous refresh token immediately).
+func CheckStravaRefresh(ctx context.Context, cfg config.Config, refreshToken string) (StravaTokens, error) {
+	return refreshStravaToken(ctx, stravaOAuthBase(cfg), cfg, refreshToken)
+}
+
 // StravaAuthorizeURL builds the consent URL.
 func StravaAuthorizeURL(cfg config.Config, state string) string {
 	query := url.Values{}
@@ -100,7 +152,7 @@ func StravaAuthorizeURL(cfg config.Config, state string) string {
 	query.Set("approval_prompt", "auto")
 	query.Set("scope", stravaScope)
 	query.Set("state", state)
-	return stravaBaseURL + "/oauth/authorize?" + query.Encode()
+	return stravaOAuthBase(cfg) + "/oauth/authorize?" + query.Encode()
 }
 
 func stravaTokenRequest(ctx context.Context, baseURL string, form url.Values) (StravaTokens, error) {
@@ -113,7 +165,7 @@ func stravaTokenRequest(ctx context.Context, baseURL string, form url.Values) (S
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	response, err := http.DefaultClient.Do(req)
+	response, err := tokenHTTPClient.Do(req)
 	if err != nil {
 		return tokens, err
 	}
@@ -144,8 +196,10 @@ type StravaUpload struct {
 }
 
 // UploadFit posts a synthesized FIT file. Strava answers with an upload id that
-// has to be polled until the file is processed.
-func (c *StravaClient) UploadFit(ctx context.Context, filename, name, description, externalID string, payload []byte) (StravaUpload, error) {
+// has to be polled until the file is processed. sportType overrides the type
+// Strava would detect from the file and is omitted when empty, because the
+// parameter is validated against a fixed enumeration.
+func (c *StravaClient) UploadFit(ctx context.Context, filename, name, description, sportType, externalID string, payload []byte) (StravaUpload, error) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
@@ -163,6 +217,9 @@ func (c *StravaClient) UploadFit(ctx context.Context, filename, name, descriptio
 		"external_id": externalID,
 		"trainer":     "0",
 	}
+	if sportType != "" {
+		fields["sport_type"] = sportType
+	}
 	for key, value := range fields {
 		if err := writer.WriteField(key, value); err != nil {
 			return StravaUpload{}, err
@@ -172,7 +229,7 @@ func (c *StravaClient) UploadFit(ctx context.Context, filename, name, descriptio
 		return StravaUpload{}, err
 	}
 
-	req, err := c.newRequest(ctx, http.MethodPost, "/api/v3/uploads", &body)
+	req, err := c.newRequest(ctx, http.MethodPost, "/uploads", &body)
 	if err != nil {
 		return StravaUpload{}, err
 	}
@@ -187,7 +244,7 @@ func (c *StravaClient) UploadFit(ctx context.Context, filename, name, descriptio
 
 // GetUpload polls the processing state of an upload.
 func (c *StravaClient) GetUpload(ctx context.Context, uploadID int64) (StravaUpload, error) {
-	req, err := c.newRequest(ctx, http.MethodGet, "/api/v3/uploads/"+strconv.FormatInt(uploadID, 10), nil)
+	req, err := c.newRequest(ctx, http.MethodGet, "/uploads/"+strconv.FormatInt(uploadID, 10), nil)
 	if err != nil {
 		return StravaUpload{}, err
 	}
@@ -198,19 +255,51 @@ func (c *StravaClient) GetUpload(ctx context.Context, uploadID int64) (StravaUpl
 	return upload, nil
 }
 
-// Deauthorize tells Strava the app no longer needs access.
-func (c *StravaClient) Deauthorize(ctx context.Context) error {
-	req, err := c.newRequest(ctx, http.MethodPost, "/oauth/deauthorize", nil)
+// RevokeAccess revokes the application's tokens for one athlete. Strava's
+// documented method is POST /oauth/revoke with HTTP Basic client credentials;
+// it is the recommended deauthorization call now and the only supported one
+// from 2027-06-01, replacing POST /oauth/deauthorize. Revoking either the
+// access or the refresh token invalidates the pair, and Strava answers 200
+// whether or not the token was still known.
+func (c *StravaClient) RevokeAccess(ctx context.Context, token string) error {
+	form := url.Values{}
+	form.Set("token", token)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.oauthBase()+"/oauth/revoke", strings.NewReader(form.Encode()))
 	if err != nil {
 		return err
 	}
-	return c.do(req, nil)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	req.SetBasicAuth(c.ClientID, c.ClientSecret)
+
+	response, err := c.httpClient().Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = response.Body.Close() }()
+	payload, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if response.StatusCode >= 400 {
+		return &ProviderError{
+			StatusCode: response.StatusCode,
+			Message:    fmt.Sprintf("strava returned %d revoking access: %s", response.StatusCode, summarize(payload)),
+			RetryAfter: retryAfter(response),
+		}
+	}
+	return nil
+}
+
+func (c *StravaClient) oauthBase() string {
+	if c.OAuthBase == "" {
+		return defaultStravaOAuthBase
+	}
+	return c.OAuthBase
 }
 
 func (c *StravaClient) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
-	base := c.BaseURL
+	base := c.APIBase
 	if base == "" {
-		base = stravaBaseURL
+		base = defaultStravaAPIBase
 	}
 	req, err := http.NewRequestWithContext(ctx, method, base+path, body)
 	if err != nil {
@@ -221,12 +310,16 @@ func (c *StravaClient) newRequest(ctx context.Context, method, path string, body
 	return req, nil
 }
 
-func (c *StravaClient) do(req *http.Request, out any) error {
-	client := c.HTTP
-	if client == nil {
-		client = &http.Client{Timeout: 120 * time.Second}
+// httpClient returns the client every provider call goes through.
+func (c *StravaClient) httpClient() *http.Client {
+	if c.HTTP != nil {
+		return c.HTTP
 	}
-	response, err := client.Do(req)
+	return &http.Client{Timeout: 120 * time.Second}
+}
+
+func (c *StravaClient) do(req *http.Request, out any) error {
+	response, err := c.httpClient().Do(req)
 	if err != nil {
 		return err
 	}

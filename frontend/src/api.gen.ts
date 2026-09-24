@@ -38,7 +38,6 @@ export interface Me {
   bio: string;
   avatarUrl: string;
   emailVerified: boolean;
-  isAdmin: boolean;
   profileVisibility: string;
   activitiesVisibility: string;
   followPolicy: string;

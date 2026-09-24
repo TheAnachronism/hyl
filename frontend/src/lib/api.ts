@@ -40,6 +40,22 @@ interface RequestOptions {
   signal?: AbortSignal;
 }
 
+/** apiErrorFrom turns a failed response into the ApiError carrying its envelope. */
+async function apiErrorFrom(response: Response): Promise<ApiError> {
+  let payload: ErrorResponse | undefined;
+  try {
+    payload = (await response.json()) as ErrorResponse;
+  } catch {
+    payload = undefined;
+  }
+  return new ApiError(
+    response.status,
+    payload?.error?.code ?? 'internal',
+    payload?.error?.message ?? response.statusText,
+    payload,
+  );
+}
+
 async function request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
   const headers = new Headers();
   let body = options.body;
@@ -62,18 +78,7 @@ async function request<T>(method: string, path: string, options: RequestOptions 
   });
 
   if (!response.ok) {
-    let payload: ErrorResponse | undefined;
-    try {
-      payload = (await response.json()) as ErrorResponse;
-    } catch {
-      payload = undefined;
-    }
-    throw new ApiError(
-      response.status,
-      payload?.error?.code ?? 'internal',
-      payload?.error?.message ?? response.statusText,
-      payload,
-    );
+    throw await apiErrorFrom(response);
   }
 
   if (response.status === 204 || response.headers.get('content-length') === '0') {
@@ -81,6 +86,32 @@ async function request<T>(method: string, path: string, options: RequestOptions 
   }
   const text = await response.text();
   return (text ? JSON.parse(text) : undefined) as T;
+}
+
+/**
+ * postForRedirect POSTs to an endpoint that answers with a redirect the caller
+ * must apply itself. The redirect is not chased: an OAuth consent screen is
+ * cross-origin, so fetch could not follow it, and a manual redirect hides its
+ * Location from a document. The target is returned when the browser exposes it,
+ * and null when the redirect arrives opaque.
+ */
+async function postForRedirect(path: string, json?: unknown): Promise<string | null> {
+  const headers = new Headers();
+  if (json !== undefined) headers.set('Content-Type', 'application/json');
+  const token = await csrfToken();
+  if (token) headers.set('X-CSRF-Token', token);
+
+  const response = await fetch(path, {
+    method: 'POST',
+    headers,
+    body: json === undefined ? undefined : JSON.stringify(json),
+    credentials: 'same-origin',
+    redirect: 'manual',
+  });
+
+  // The redirect itself is the success case; only a real 4xx/5xx is an error.
+  if (response.status >= 400) throw await apiErrorFrom(response);
+  return response.headers.get('Location');
 }
 
 /** api is the single typed entry point to the hyl REST API. */
@@ -91,6 +122,7 @@ export const api = {
   put: <T>(path: string, json?: unknown) => request<T>('PUT', path, { json }),
   del: <T>(path: string, json?: unknown) => request<T>('DELETE', path, { json }),
   postForm: <T>(path: string, form: FormData) => request<T>('POST', path, { body: form }),
+  postRedirect: (path: string, json?: unknown) => postForRedirect(path, json),
 };
 
 /** query builds a `?a=1&b=2` string, skipping empty values. */

@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -102,7 +103,7 @@ func TestExportSendsFitToStrava(t *testing.T) {
 	harness.exporter.Cfg.StravaClientID = "client-id"
 	harness.exporter.Cfg.StravaClientSecret = "client-secret"
 	harness.exporter.newClient = func(accessToken string) *StravaClient {
-		return &StravaClient{BaseURL: server.URL, AccessToken: accessToken, HTTP: server.Client()}
+		return &StravaClient{APIBase: server.URL + "/api/v3", AccessToken: accessToken, HTTP: server.Client()}
 	}
 
 	harness.exporter.Drain(context.Background())
@@ -153,7 +154,7 @@ func TestExportMultipartContract(t *testing.T) {
 	harness.exporter.Cfg.StravaClientID = "client-id"
 	harness.exporter.Cfg.StravaClientSecret = "client-secret"
 	harness.exporter.newClient = func(accessToken string) *StravaClient {
-		return &StravaClient{BaseURL: server.URL, AccessToken: accessToken, HTTP: server.Client()}
+		return &StravaClient{APIBase: server.URL + "/api/v3", AccessToken: accessToken, HTTP: server.Client()}
 	}
 
 	harness.exporter.Drain(context.Background())
@@ -214,7 +215,7 @@ func TestExportRetriesAndGivesUp(t *testing.T) {
 	harness.exporter.Cfg.StravaClientID = "id"
 	harness.exporter.Cfg.StravaClientSecret = "secret"
 	harness.exporter.newClient = func(accessToken string) *StravaClient {
-		return &StravaClient{BaseURL: server.URL, AccessToken: accessToken, HTTP: server.Client()}
+		return &StravaClient{APIBase: server.URL + "/api/v3", AccessToken: accessToken, HTTP: server.Client()}
 	}
 
 	for range exportMaxAttempts {
@@ -261,6 +262,7 @@ func TestStravaAuthorizeURL(t *testing.T) {
 type exportHarness struct {
 	exporter *Exporter
 	queries  *db.Queries
+	pool     *sql.DB
 	cipher   *secrets.Cipher
 	user     db.User
 	activity db.Activity
@@ -340,5 +342,140 @@ func newExportHarness(t *testing.T) exportHarness {
 	if _, err := QueueExport(ctx, queries, activityRow, exportTargetStrava); err != nil {
 		t.Fatalf("queue export: %v", err)
 	}
-	return exportHarness{exporter: exporter, queries: queries, cipher: cipher, user: user, activity: activityRow}
+	return exportHarness{exporter: exporter, queries: queries, pool: pool, cipher: cipher, user: user, activity: activityRow}
+}
+
+// TestExportRateLimitDoesNotSpendAnAttempt is the regression test for exports
+// being failed permanently by throttling: a 429 says nothing about the activity,
+// and five throttled ticks used to mark the row terminally broken.
+func TestExportRateLimitDoesNotSpendAnAttempt(t *testing.T) {
+	var mu sync.Mutex
+	uploads := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth/token" {
+			writeJSON(t, w, map[string]any{
+				"access_token": "access-2", "refresh_token": "refresh-2",
+				"expires_at": time.Now().Add(6 * time.Hour).Unix(),
+				"athlete":    map[string]any{"id": 999},
+			})
+			return
+		}
+		mu.Lock()
+		uploads++
+		mu.Unlock()
+		// Strava reports throttle usage through headers rather than
+		// Retry-After, which is exactly what used to be ignored.
+		w.Header().Set("X-RateLimit-Limit", "100,1000")
+		w.Header().Set("X-RateLimit-Usage", "100,1000")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"message":"Rate Limit Exceeded"}`))
+	}))
+	defer server.Close()
+
+	harness := newExportHarness(t)
+	harness.exporter.tokenBaseURL = server.URL
+	harness.exporter.Cfg.StravaClientID = "client-id"
+	harness.exporter.Cfg.StravaClientSecret = "client-secret"
+	harness.exporter.newClient = func(accessToken string) *StravaClient {
+		return &StravaClient{APIBase: server.URL + "/api/v3", AccessToken: accessToken, HTTP: server.Client()}
+	}
+
+	harness.exporter.Drain(context.Background())
+
+	ctx := context.Background()
+	row, err := harness.queries.GetExport(ctx, harness.activity.ID, exportTargetStrava)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Status != exportStatusPending {
+		t.Fatalf("status = %q, want pending after a rate limit", row.Status)
+	}
+	if row.Attempts != 0 {
+		t.Fatalf("a rate limit spent %d attempts, want 0", row.Attempts)
+	}
+	if row.LastError == nil || *row.LastError == "" {
+		t.Fatal("the rate limit was not recorded")
+	}
+
+	// The window is respected: a second pass does not hit Strava again.
+	harness.exporter.Drain(ctx)
+	mu.Lock()
+	after := uploads
+	mu.Unlock()
+	if after != 1 {
+		t.Fatalf("uploads = %d, want the second drain to be throttled", after)
+	}
+}
+
+// TestExportCanBeRequeuedAfterAFailure pins the recovery path: a row that ended
+// in error is the only one a re-queue may reset, so an upload Strava rejected
+// can be retried once the cause is fixed.
+func TestExportCanBeRequeuedAfterAFailure(t *testing.T) {
+	harness := newExportHarness(t)
+	ctx := context.Background()
+
+	// A pending row keeps its place, which the handler reports as a conflict.
+	queued, err := QueueExport(ctx, harness.queries, harness.activity, exportTargetStrava)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued {
+		t.Fatal("a pending export was queued a second time")
+	}
+
+	row, err := harness.queries.GetExport(ctx, harness.activity.ID, exportTargetStrava)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := "strava rejected the activity"
+	if _, err := harness.queries.UpdateExportStatus(ctx, exportStatusError, nil, exportMaxAttempts, &message, time.Now().Unix(), row.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	queued, err = QueueExport(ctx, harness.queries, harness.activity, exportTargetStrava)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !queued {
+		t.Fatal("a failed export could not be re-queued")
+	}
+	reset, err := harness.queries.GetExport(ctx, harness.activity.ID, exportTargetStrava)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reset.Status != exportStatusPending || reset.Attempts != 0 || reset.LastError != nil {
+		t.Fatalf("re-queued row = %+v, want a clean pending row", reset)
+	}
+}
+
+// TestExportSendsSportType pins the round-trip of the provider's own activity
+// type: without it every ride flavour Strava knows collapses into a generic one.
+func TestExportSendsSportType(t *testing.T) {
+	fake := &fakeStrava{}
+	server := fake.server(t)
+	defer server.Close()
+
+	harness := newExportHarness(t)
+	harness.exporter.tokenBaseURL = server.URL
+	harness.exporter.Cfg.StravaClientID = "client-id"
+	harness.exporter.Cfg.StravaClientSecret = "client-secret"
+	harness.exporter.newClient = func(accessToken string) *StravaClient {
+		return &StravaClient{APIBase: server.URL + "/api/v3", AccessToken: accessToken, HTTP: server.Client()}
+	}
+	ctx := context.Background()
+	if _, err := harness.pool.ExecContext(ctx,
+		`UPDATE activities SET external_sport = ? WHERE id = ?`, "GravelRide", harness.activity.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	harness.exporter.Drain(ctx)
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.uploads) != 1 {
+		t.Fatalf("uploads = %d, want 1", len(fake.uploads))
+	}
+	if got := fake.uploads[0].Fields["sport_type"]; got != "GravelRide" {
+		t.Fatalf("sport_type = %q, want GravelRide", got)
+	}
 }

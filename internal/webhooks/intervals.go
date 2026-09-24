@@ -9,6 +9,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"go.uber.org/zap"
 
+	"github.com/markbeep/hyl/internal/activity"
 	"github.com/markbeep/hyl/internal/config"
 	"github.com/markbeep/hyl/internal/db"
 	"github.com/markbeep/hyl/internal/sync"
@@ -20,11 +21,14 @@ type Intervals struct {
 	Cfg    config.Config
 	Log    *zap.Logger
 	Worker *sync.Worker
+	// Activities propagates provider-side deletions; it is optional so tests
+	// can exercise the handler without the activity store.
+	Activities *activity.Handlers
 }
 
 // NewIntervals builds the intervals webhook handler.
-func NewIntervals(pool *sql.DB, cfg config.Config, log *zap.Logger, worker *sync.Worker) *Intervals {
-	return &Intervals{Q: db.New(pool), Cfg: cfg, Log: log, Worker: worker}
+func NewIntervals(pool *sql.DB, cfg config.Config, log *zap.Logger, worker *sync.Worker, activities *activity.Handlers) *Intervals {
+	return &Intervals{Q: db.New(pool), Cfg: cfg, Log: log, Worker: worker, Activities: activities}
 }
 
 // Handle accepts an event batch. The shared secret is verified in constant time
@@ -62,9 +66,9 @@ func (h *Intervals) Handle(c echo.Context) error {
 		default:
 			continue
 		}
-		// Resolve the athlete to the account that owns the connection, then ask
-		// the worker to re-sync that user. The import guards make a redundant
-		// pass harmless, which is why no per-activity work is queued here.
+		// Resolve the athlete to the account that owns the connection, then act
+		// on the event. The import guards make a redundant pass harmless, which
+		// is why no per-activity import work is queued here.
 		athleteID := event.AthleteID
 		connection, err := h.Q.GetConnectionByExternalID(ctx, sync.KindIntervalsOAuth, &athleteID)
 		if err != nil {
@@ -72,6 +76,17 @@ func (h *Intervals) Handle(c echo.Context) error {
 		}
 		if err != nil {
 			h.Log.Debug("webhook for an unknown athlete", zap.String("athlete_id", event.AthleteID))
+			continue
+		}
+		if event.Type == "ACTIVITY_DELETED" {
+			// A deletion is the one event a re-import pass can never converge
+			// on, so it is applied directly rather than turned into a trigger.
+			if h.Activities != nil {
+				if err := h.Activities.DeleteProviderActivity(ctx, connection.UserID, connection.Kind, event.Activity.ID); err != nil {
+					h.Log.Warn("propagating a provider deletion failed",
+						zap.String("activity_id", event.Activity.ID), zap.Error(err))
+				}
+			}
 			continue
 		}
 		h.Worker.Trigger(connection.UserID)

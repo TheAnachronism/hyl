@@ -7,7 +7,6 @@ package db
 
 import (
 	"context"
-	"strings"
 )
 
 const countActivityMedia = `-- name: CountActivityMedia :one
@@ -109,49 +108,6 @@ func (q *Queries) GetMedia(ctx context.Context, id int64) (Medium, error) {
 	return i, err
 }
 
-const listActiveAvatarIDs = `-- name: ListActiveAvatarIDs :many
-SELECT id, user_id FROM media
-WHERE kind = 'avatar' AND deleted_at IS NULL AND user_id IN (/*SLICE:user_ids*/?)
-`
-
-type ListActiveAvatarIDsRow struct {
-	ID     int64
-	UserID int64
-}
-
-func (q *Queries) ListActiveAvatarIDs(ctx context.Context, userIds []int64) ([]ListActiveAvatarIDsRow, error) {
-	query := listActiveAvatarIDs
-	var queryParams []interface{}
-	if len(userIds) > 0 {
-		for _, v := range userIds {
-			queryParams = append(queryParams, v)
-		}
-		query = strings.Replace(query, "/*SLICE:user_ids*/?", strings.Repeat(",?", len(userIds))[1:], 1)
-	} else {
-		query = strings.Replace(query, "/*SLICE:user_ids*/?", "NULL", 1)
-	}
-	rows, err := q.db.QueryContext(ctx, query, queryParams...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListActiveAvatarIDsRow{}
-	for rows.Next() {
-		var i ListActiveAvatarIDsRow
-		if err := rows.Scan(&i.ID, &i.UserID); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listActivityMedia = `-- name: ListActivityMedia :many
 SELECT id, user_id, activity_id, kind, position, width, height, bytes, created_at, deleted_at FROM media
 WHERE activity_id = CAST(?1 AS INTEGER) AND deleted_at IS NULL
@@ -210,18 +166,6 @@ UPDATE media SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL
 
 func (q *Queries) SoftDeleteMedia(ctx context.Context, deletedAt *int64, iD int64) (int64, error) {
 	result, err := q.db.ExecContext(ctx, softDeleteMedia, deletedAt, iD)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-const softDeleteUserAvatars = `-- name: SoftDeleteUserAvatars :execrows
-UPDATE media SET deleted_at = ? WHERE user_id = ? AND kind = 'avatar' AND deleted_at IS NULL
-`
-
-func (q *Queries) SoftDeleteUserAvatars(ctx context.Context, deletedAt *int64, userID int64) (int64, error) {
-	result, err := q.db.ExecContext(ctx, softDeleteUserAvatars, deletedAt, userID)
 	if err != nil {
 		return 0, err
 	}

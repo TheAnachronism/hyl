@@ -24,12 +24,5 @@ UPDATE media SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL;
 -- name: GetActiveAvatar :one
 SELECT * FROM media WHERE user_id = ? AND kind = 'avatar' AND deleted_at IS NULL;
 
--- name: SoftDeleteUserAvatars :execrows
-UPDATE media SET deleted_at = ? WHERE user_id = ? AND kind = 'avatar' AND deleted_at IS NULL;
-
--- name: ListActiveAvatarIDs :many
-SELECT id, user_id FROM media
-WHERE kind = 'avatar' AND deleted_at IS NULL AND user_id IN (sqlc.slice('user_ids'));
-
 -- name: UpdateMediaSize :execrows
 UPDATE media SET width = ?, height = ?, bytes = ? WHERE id = ?;

@@ -41,6 +41,7 @@ type Ingester interface {
 type Provider interface {
 	ListActivities(ctx context.Context, athleteID, oldest, newest string, limit int) ([]IntervalsActivity, error)
 	DownloadFit(ctx context.Context, activityID string) (io.ReadCloser, error)
+	AthleteID(ctx context.Context) (string, error)
 }
 
 // Worker runs the background import. One goroutine owns every provider call:
@@ -105,6 +106,7 @@ func (w *Worker) Run(ctx context.Context) {
 			w.log.Info("sync worker stopped")
 			return
 		case <-ticker.C:
+			w.expireSessions(ctx)
 			w.syncPass(ctx, 0)
 		case userID := <-w.trigger:
 			w.syncPass(ctx, userID)
@@ -128,10 +130,36 @@ func (w *Worker) syncPass(ctx context.Context, userID int64) {
 		if userID != 0 && conn.UserID != userID {
 			continue
 		}
+		if !importableKind(conn.Kind) {
+			continue
+		}
 		w.syncConnection(ctx, conn)
 	}
 	if w.exporter != nil {
 		w.exporter.Drain(ctx)
+	}
+}
+
+// importableKind reports whether the import worker can read from this provider.
+// The worker only speaks the intervals.icu API, and a strava_oauth row carries a
+// Strava token as its credential, so handing that row to it would send the
+// user's Strava token to intervals.icu. Strava connections are export-only.
+func importableKind(kind string) bool {
+	return kind == KindIntervalsOAuth || kind == KindIntervalsAPIKey
+}
+
+// expireSessions drops sessions that have outlived their TTL. Resolving a stale
+// cookie deletes the row it looked up, so a session only ever disappeared when
+// its owner came back with it; one that was abandoned outright stayed in the
+// table forever, which for a self-hosted instance means the table only grows.
+func (w *Worker) expireSessions(ctx context.Context) {
+	removed, err := w.q.DeleteExpiredSessions(ctx, time.Now().Unix())
+	if err != nil {
+		w.log.Warn("expiring sessions failed", zap.Error(err))
+		return
+	}
+	if removed > 0 {
+		w.log.Info("expired sessions removed", zap.Int64("count", removed))
 	}
 }
 
@@ -171,6 +199,13 @@ func (w *Worker) syncConnection(ctx context.Context, conn db.Connection) {
 
 // importWindow walks the unsynced window in chunks and returns the counters.
 func (w *Worker) importWindow(ctx context.Context, conn db.Connection, now time.Time) (imported, skipped int64, err error) {
+	// Last line of defence for the credential-disclosure bug this package had:
+	// newProvider below turns whatever secret it is handed into either a bearer
+	// token or an intervals API key, so a row that does not belong to
+	// intervals.icu must never reach it.
+	if !importableKind(conn.Kind) {
+		return 0, 0, fmt.Errorf("connection kind %q cannot be imported", conn.Kind)
+	}
 	secret, err := w.cipher.DecryptString(conn.AccessTokenCipher)
 	if err != nil {
 		return 0, 0, fmt.Errorf("decrypting the stored token failed; reconnect this provider")
@@ -182,6 +217,23 @@ func (w *Worker) importWindow(ctx context.Context, conn db.Connection, now time.
 	athleteID := "0"
 	if conn.ExternalAthleteID != nil && *conn.ExternalAthleteID != "" {
 		athleteID = *conn.ExternalAthleteID
+	}
+	// "0" means "whoever owns this credential": fine for reading, useless for
+	// matching a webhook, which always names the real athlete. Resolve it once
+	// and keep it, so an API-key connection that was stored as "0" heals.
+	if athleteID == "0" {
+		resolved, err := provider.AthleteID(ctx)
+		switch {
+		case err != nil:
+			w.log.Warn("resolving the intervals athlete id failed", zap.Error(err))
+		case resolved == "":
+			// Nothing to learn; the credential keeps working with "0".
+		default:
+			if _, err := w.q.UpdateConnectionAthleteID(ctx, &resolved, now.Unix(), conn.ID); err != nil {
+				w.log.Warn("storing the resolved athlete id failed", zap.Error(err))
+			}
+			athleteID = resolved
+		}
 	}
 
 	oldest := now.AddDate(0, 0, -syncLookbackDays)
@@ -274,6 +326,9 @@ func (w *Worker) importCandidate(ctx context.Context, conn db.Connection, provid
 		Title:     title,
 		Source:    conn.Kind,
 		SourceRef: candidate.ID,
+		// Kept so the export can give Strava back the type it reported rather
+		// than hyl's coarse sport key.
+		SourceSport: firstNonEmpty(candidate.Type, candidate.Sport),
 	})
 	if err != nil {
 		var duplicate *activity.DuplicateError
@@ -294,18 +349,22 @@ func (w *Worker) importCandidate(ctx context.Context, conn db.Connection, provid
 func (w *Worker) recordFailure(ctx context.Context, conn db.Connection, runErr error, now int64) {
 	message := runErr.Error()
 	next := time.Now()
+	// A provider that told us when to come back is obeyed exactly; everything
+	// else falls through to the streak-based backoff below.
+	delayKnown := false
 
 	var providerErr *ProviderError
 	if errors.As(runErr, &providerErr) {
 		if providerErr.RetryAfter > 0 {
 			next = next.Add(providerErr.RetryAfter)
+			delayKnown = true
 		} else if providerErr.NeedsReauthorization() && conn.Kind == KindIntervalsOAuth {
 			// intervals issues no refresh token, so a stale token can only be
 			// fixed by the user reconnecting.
 			message = "reauthorize"
 		}
 	}
-	if next.Equal(time.Now()) {
+	if !delayKnown {
 		streak, err := w.q.CountRecentFailedRuns(ctx, conn.UserID, conn.Kind)
 		if err != nil {
 			w.log.Warn("counting failed runs failed", zap.Error(err))

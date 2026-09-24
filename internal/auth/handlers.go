@@ -98,11 +98,6 @@ func (s *Service) Register(c echo.Context) error {
 	if err != nil {
 		return err
 	}
-	count, err := s.Q.CountUsers(ctx)
-	if err != nil {
-		return err
-	}
-
 	now := time.Now().Unix()
 	user, err := s.Q.CreateUser(ctx, db.CreateUserParams{
 		Username:      username,
@@ -110,7 +105,6 @@ func (s *Service) Register(c echo.Context) error {
 		DisplayName:   username,
 		PasswordHash:  &hash,
 		EmailVerified: false,
-		IsAdmin:       count == 0,
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	})

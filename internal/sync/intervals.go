@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -91,6 +92,22 @@ func (c *IntervalsClient) ListActivities(ctx context.Context, athleteID, oldest,
 	return activities, nil
 }
 
+// AthleteID resolves the athlete a credential belongs to. intervals accepts "0"
+// as "the owner of this credential", but webhook events always name the real
+// athlete id, so a connection has to learn its own id to match them.
+func (c *IntervalsClient) AthleteID(ctx context.Context) (string, error) {
+	var athlete struct {
+		ID string `json:"id"`
+	}
+	if err := c.request(ctx, http.MethodGet, "/api/v1/athlete/0", nil, &athlete); err != nil {
+		return "", err
+	}
+	if athlete.ID == "" {
+		return "", errors.New("intervals.icu returned no athlete id")
+	}
+	return athlete.ID, nil
+}
+
 // DownloadFit fetches the original file of one activity. intervals refuses to
 // serve files for activities that came from Strava, so callers skip those.
 func (c *IntervalsClient) DownloadFit(ctx context.Context, activityID string) (io.ReadCloser, error) {
@@ -136,7 +153,7 @@ func ExchangeIntervalsCode(ctx context.Context, cfg config.Config, code string) 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	response, err := http.DefaultClient.Do(req)
+	response, err := tokenHTTPClient.Do(req)
 	if err != nil {
 		return "", "", err
 	}
@@ -246,20 +263,59 @@ func (e *ProviderError) NeedsReauthorization() bool {
 	return e.StatusCode == http.StatusUnauthorized || e.StatusCode == http.StatusForbidden
 }
 
+// rateLimitWindow is the providers' rolling throttle window.
+const rateLimitWindow = 15 * time.Minute
+
+// retryAfter reads whatever backoff hint the provider sent. Both providers
+// express their 15-minute budget as a comma-separated pair, but intervals
+// reports what is left while Strava reports what was used, and Strava never
+// sends Retry-After at all, so all three forms are handled.
 func retryAfter(response *http.Response) time.Duration {
 	raw := response.Header.Get("Retry-After")
-	if raw == "" {
-		return 0
-	}
-	if seconds, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil {
-		return time.Duration(seconds) * time.Second
-	}
-	if when, err := http.ParseTime(raw); err == nil {
-		if delta := time.Until(when); delta > 0 {
-			return delta
+	if raw != "" {
+		if seconds, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil {
+			return time.Duration(seconds) * time.Second
+		}
+		if when, err := http.ParseTime(raw); err == nil {
+			if delta := time.Until(when); delta > 0 {
+				return delta
+			}
 		}
 	}
+	if budgetExhausted(response.Header) {
+		return rateLimitWindow
+	}
 	return 0
+}
+
+// budgetExhausted reports whether the 15-minute quota is spent: Strava sends
+// X-RateLimit-Limit and X-RateLimit-Usage, intervals sends X-RateLimit-Limit
+// and X-RateLimit-Remaining, both as "<15m>,<daily>".
+func budgetExhausted(header http.Header) bool {
+	limit, ok := windowQuota(header.Get("X-RateLimit-Limit"))
+	if !ok {
+		return false
+	}
+	if used, ok := windowQuota(header.Get("X-RateLimit-Usage")); ok {
+		return used >= limit
+	}
+	if left, ok := windowQuota(header.Get("X-RateLimit-Remaining")); ok {
+		return left == 0
+	}
+	return false
+}
+
+// windowQuota parses the 15-minute member of a "<15m>,<daily>" header.
+func windowQuota(raw string) (int, bool) {
+	if raw == "" {
+		return 0, false
+	}
+	part, _, _ := strings.Cut(raw, ",")
+	value, err := strconv.Atoi(strings.TrimSpace(part))
+	if err != nil {
+		return 0, false
+	}
+	return value, true
 }
 
 func summarize(payload []byte) string {

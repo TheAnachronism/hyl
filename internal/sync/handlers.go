@@ -102,7 +102,8 @@ func (h *Handlers) ConnectIntervalsAPIKey(c echo.Context) error {
 		return apperr.BadRequest("an intervals.icu API key is required")
 	}
 	athleteID := strings.TrimSpace(req.AthleteID)
-	if athleteID == "" {
+	defaulted := athleteID == ""
+	if defaulted {
 		// "0" is the key owner, which is what a self-hoster wants.
 		athleteID = "0"
 	}
@@ -119,6 +120,16 @@ func (h *Handlers) ConnectIntervalsAPIKey(c echo.Context) error {
 	if _, err := probe.ListActivities(ctx, athleteID, oldest.Format("2006-01-02"), newest.Format("2006-01-02"), 1); err != nil {
 		h.Log.Warn("validating an intervals API key failed", zap.Error(err))
 		return apperr.BadRequest("intervals.icu rejected that API key or athlete id")
+	}
+	if defaulted {
+		// Webhook events always name the real athlete, so the placeholder has
+		// to be traded for the id the events will carry.
+		resolved, err := probe.AthleteID(ctx)
+		if err != nil {
+			h.Log.Warn("resolving the intervals athlete id failed", zap.Error(err))
+		} else {
+			athleteID = resolved
+		}
 	}
 
 	sealed, err := h.Cipher.EncryptString(apiKey)
@@ -271,6 +282,21 @@ func (h *Handlers) DeleteConnection(c echo.Context) error {
 			h.Log.Warn("telling intervals.icu about the disconnect failed", zap.Error(err))
 		}
 	}
+	if conn.Kind == KindStravaOAuth {
+		// Same reasoning as above. The refresh token is preferred because
+		// revoking it revokes the access token with it, and it is the only
+		// credential guaranteed to still be current.
+		token, err := h.Cipher.DecryptString(conn.RefreshTokenCipher)
+		if err != nil || token == "" {
+			token, _ = h.Cipher.DecryptString(conn.AccessTokenCipher)
+		}
+		if token != "" {
+			client := NewStravaClient(h.Cfg, "")
+			if err := client.RevokeAccess(ctx, token); err != nil {
+				h.Log.Warn("telling Strava about the disconnect failed", zap.Error(err))
+			}
+		}
+	}
 
 	if _, err := h.Q.DeletePendingExportsForUser(ctx, user.ID); err != nil {
 		return err
@@ -355,11 +381,6 @@ func (h *Handlers) RunSync(c echo.Context) error {
 	}
 	h.Worker.Trigger(user.ID)
 	return c.JSON(http.StatusAccepted, map[string]string{"status": "queued"})
-}
-
-// Status returns the last runs and the per-connection state.
-func (h *Handlers) Status(c echo.Context) error {
-	return h.List(c)
 }
 
 // importRuleMatrix materialises one row per connection kind and sport, so the

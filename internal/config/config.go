@@ -6,6 +6,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -33,6 +34,10 @@ type Config struct {
 	RegistrationOpen bool
 	SessionTTL       time.Duration
 	SyncInterval     time.Duration
+	// TrustedProxies lists the addresses allowed to set X-Forwarded-For. It is
+	// empty by default: a direct listener must not believe a header any client
+	// can write.
+	TrustedProxies []string
 
 	GoogleKey    string
 	GoogleSecret string
@@ -46,6 +51,10 @@ type Config struct {
 	StravaClientID           string
 	StravaClientSecret       string
 	StravaWebhookVerifyToken string
+	// StravaAPIBase and StravaOAuthBase follow Strava's 2027-01-04 host
+	// migration: the REST API moves to its own host while OAuth stays put.
+	StravaAPIBase   string
+	StravaOAuthBase string
 
 	SMTPHost string
 	SMTPPort int
@@ -84,6 +93,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return c, err
 	}
+	c.TrustedProxies = listEnv("HYL_TRUSTED_PROXIES")
 
 	c.GoogleKey = envOr("HYL_GOOGLE_KEY", "")
 	c.GoogleSecret = envOr("HYL_GOOGLE_SECRET", "")
@@ -95,6 +105,8 @@ func Load() (Config, error) {
 	c.StravaClientID = envOr("HYL_STRAVA_CLIENT_ID", "")
 	c.StravaClientSecret = envOr("HYL_STRAVA_CLIENT_SECRET", "")
 	c.StravaWebhookVerifyToken = envOr("HYL_STRAVA_WEBHOOK_VERIFY_TOKEN", "")
+	c.StravaAPIBase = envOr("HYL_STRAVA_API_BASE", "https://www.strava.com/api/v3")
+	c.StravaOAuthBase = envOr("HYL_STRAVA_OAUTH_BASE", "https://www.strava.com")
 
 	c.SMTPHost = envOr("HYL_SMTP_HOST", "")
 	c.SMTPUser = envOr("HYL_SMTP_USER", "")
@@ -129,6 +141,27 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("HYL_SMTP_TLS must be starttls, implicit or none: %q", c.SMTPTLS)
 	}
+	for name, raw := range map[string]string{
+		"HYL_STRAVA_API_BASE":   c.StravaAPIBase,
+		"HYL_STRAVA_OAUTH_BASE": c.StravaOAuthBase,
+	} {
+		if raw == "" {
+			continue
+		}
+		u, err := url.Parse(raw)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return fmt.Errorf("%s must be an absolute URL: %q", name, raw)
+		}
+	}
+	for _, entry := range c.TrustedProxies {
+		if _, _, err := net.ParseCIDR(entry); err == nil {
+			continue
+		}
+		if net.ParseIP(entry) != nil {
+			continue
+		}
+		return fmt.Errorf("HYL_TRUSTED_PROXIES entries must be IP addresses or CIDR blocks: %q", entry)
+	}
 	if c.PMTilesFile != "" && (strings.ContainsAny(c.PMTilesFile, `/\`) || !strings.HasSuffix(c.PMTilesFile, ".pmtiles")) {
 		return fmt.Errorf("HYL_PMTILES_FILE must be a bare .pmtiles filename: %q", c.PMTilesFile)
 	}
@@ -144,9 +177,6 @@ func (c Config) EnsureDirs() error {
 	}
 	return nil
 }
-
-// IsProduction reports whether the instance runs in production mode.
-func (c Config) IsProduction() bool { return c.Env == "production" }
 
 // IsHTTPS reports whether the public origin is served over TLS. It drives the
 // Secure flag on every cookie hyl sets.
@@ -188,6 +218,22 @@ func boolEnv(name string, def bool) (bool, error) {
 		return def, fmt.Errorf("%s must be a boolean: %q", name, v)
 	}
 	return b, nil
+}
+
+// listEnv reads a comma-separated environment variable, dropping empty members.
+func listEnv(name string) []string {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 func intEnv(name string, def int) (int, error) {

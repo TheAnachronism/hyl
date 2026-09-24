@@ -28,7 +28,6 @@ type Me struct {
 	Bio                  string `json:"bio"`
 	AvatarURL            string `json:"avatarUrl"`
 	EmailVerified        bool   `json:"emailVerified"`
-	IsAdmin              bool   `json:"isAdmin"`
 	ProfileVisibility    string `json:"profileVisibility"`
 	ActivitiesVisibility string `json:"activitiesVisibility"`
 	FollowPolicy         string `json:"followPolicy"`

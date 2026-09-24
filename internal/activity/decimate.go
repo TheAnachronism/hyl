@@ -145,8 +145,11 @@ func DecimateCoords[T any](coords []T, maxPoints int) []T {
 	for i := 0; i < len(coords); i += step {
 		out = append(out, coords[i])
 	}
-	if len(coords) > 0 {
-		out = append(out, coords[len(coords)-1])
+	// The stride can land exactly on the last index. Appending it then would
+	// duplicate that coordinate and put the result one over the budget, which
+	// is a zero-length polyline segment and a repeated stream value.
+	if last := len(coords) - 1; last%step != 0 {
+		out = append(out, coords[last])
 	}
 	return out
 }

@@ -65,12 +65,7 @@ func Forbidden(format string, args ...any) *Error {
 
 // The sentinels are shared immutable values.
 var (
-	ErrUnauthorized    = New(CodeUnauthorized, http.StatusUnauthorized, "authentication required")
-	ErrForbidden       = New(CodeForbidden, http.StatusForbidden, "not allowed")
-	ErrNotFound        = New(CodeNotFound, http.StatusNotFound, "not found")
-	ErrInvalidRequest  = New(CodeInvalidRequest, http.StatusBadRequest, "invalid request")
-	ErrConflict        = New(CodeConflict, http.StatusConflict, "conflict")
-	ErrRateLimited     = New(CodeRateLimited, http.StatusTooManyRequests, "too many requests")
-	ErrInternal        = New(CodeInternal, http.StatusInternalServerError, "internal error")
-	ErrDuplicateUpload = New(CodeDuplicateActivity, http.StatusConflict, "activity already imported")
+	ErrUnauthorized   = New(CodeUnauthorized, http.StatusUnauthorized, "authentication required")
+	ErrInvalidRequest = New(CodeInvalidRequest, http.StatusBadRequest, "invalid request")
+	ErrRateLimited    = New(CodeRateLimited, http.StatusTooManyRequests, "too many requests")
 )

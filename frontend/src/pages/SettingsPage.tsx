@@ -99,6 +99,7 @@ function AccountSection() {
   const [error, setError] = createSignal('');
   const [notice, setNotice] = createSignal('');
   const [busy, setBusy] = createSignal(false);
+  const [linking, setLinking] = createSignal('');
 
   const [identities, { refetch: refetchIdentities }] = createResource(
     () => currentUser()?.id,
@@ -180,6 +181,27 @@ function AccountSection() {
       setError(message(err));
     } finally {
       setBusy(false);
+    }
+  }
+
+  // The link route is POST-only (it is CSRF-protected and records the link
+  // intent) and answers with a redirect to the provider's consent screen. A
+  // fetch cannot follow that hop, so the POST is issued first and the browser is
+  // then sent on to the provider.
+  async function link(provider: string) {
+    setLinking(provider);
+    setError('');
+    setNotice('');
+    try {
+      const target = await api.postRedirect(`/api/me/identities/${provider}/link`);
+      // A manual redirect can arrive opaque, without its Location, so the
+      // server's own hand-off route is the fallback for the target it named.
+      window.location.assign(target ?? `/auth/${provider}`);
+      // The button stays busy on success: the browser is already leaving for
+      // the provider.
+    } catch (err) {
+      setError(message(err));
+      setLinking('');
     }
   }
 
@@ -336,9 +358,16 @@ function AccountSection() {
                 !(identities() ?? []).some((identity) => identity.provider === provider.id)
               }
             >
-              <a class="button is-small" href={`/api/me/identities/${provider.id}/link`} rel="external">
-                Link {PROVIDER_LABELS[provider.id] ?? provider.id}
-              </a>
+              <button
+                type="button"
+                class="button is-small"
+                disabled={linking() === provider.id}
+                onClick={() => void link(provider.id)}
+              >
+                {linking() === provider.id
+                  ? 'Redirecting…'
+                  : `Link ${PROVIDER_LABELS[provider.id] ?? provider.id}`}
+              </button>
             </Show>
           )}
         </For>
@@ -1010,8 +1039,12 @@ function DeveloperSection() {
     try {
       await navigator.clipboard.writeText(key);
       setCopied(true);
+      setError('');
     } catch {
+      // The key is shown exactly once, so a failed copy has to be loud: the
+      // dialog may be gone before the user notices.
       setCopied(false);
+      setError('Could not copy the key to the clipboard. Select it and copy it manually.');
     }
   }
 

@@ -24,6 +24,9 @@ jobs:
       - run: npm --prefix frontend ci && npm --prefix frontend run typecheck && npm --prefix frontend run build
       - run: go vet ./... && go test ./...
       - run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 && sqlc generate && git diff --exit-code internal/db
+      # frontend/src/api.gen.ts is committed and typed against by the frontend,
+      # so tygo output has to stay in sync with internal/api.
+      - run: go tool tygo generate && git diff --exit-code frontend/src/api.gen.ts
   docker:
     needs: test
     runs-on: ubuntu-latest

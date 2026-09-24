@@ -10,8 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"go.uber.org/zap"
 
@@ -50,6 +52,10 @@ type IngestOptions struct {
 	SportOverride string
 	Source        string
 	SourceRef     string
+	// SourceSport is the provider's own activity type. hyl keeps only eight
+	// coarse sport keys, so this is what lets an export hand Strava back the
+	// type Strava itself reported.
+	SourceSport string
 }
 
 // Store parses uploads and writes activities.
@@ -122,6 +128,7 @@ func (s *Store) Ingest(ctx context.Context, ownerID int64, r io.Reader, opts Ing
 		Title:          truncateString(title, 120),
 		Description:    truncateString(description, 2000),
 		Sport:          sport,
+		ExternalSport:  anyOrNil(strings.TrimSpace(opts.SourceSport)),
 		StartedAt:      parsed.StartedAt.Unix(),
 		ElapsedTimeS:   metrics.ElapsedTimeS,
 		MovingTimeS:    metrics.MovingTimeS,
@@ -250,14 +257,38 @@ func ParsePayload(data []byte) (ParsedActivity, error) {
 		return ParsedActivity{}, err
 	}
 
+	var parsed ParsedActivity
 	switch {
 	case looksLikeFIT(payload):
-		return ParseFIT(bytes.NewReader(payload))
+		parsed, err = ParseFIT(bytes.NewReader(payload))
 	case bytes.Contains(payload, []byte("<gpx")):
-		return ParseGPX(bytes.NewReader(payload))
+		parsed, err = ParseGPX(bytes.NewReader(payload))
 	default:
 		return ParsedActivity{}, ErrUnsupportedFormat
 	}
+	if err != nil {
+		return ParsedActivity{}, err
+	}
+	return orderChronologically(parsed), nil
+}
+
+// orderChronologically sorts a parsed activity's samples by timestamp. Neither
+// format guarantees document order: a GPX can hold several <trkseg> blocks and a
+// FIT recorder can flush a buffered record after newer ones. Everything
+// downstream assumes ascending time - elapsed seconds are derived from the first
+// sample, and the 1 Hz decimation keeps whichever sample it meets first - so an
+// out-of-order file would otherwise store negative elapsed times and silently
+// drop samples.
+func orderChronologically(parsed ParsedActivity) ParsedActivity {
+	sort.SliceStable(parsed.Samples, func(i, j int) bool {
+		return parsed.Samples[i].T.Before(parsed.Samples[j].T)
+	})
+	if len(parsed.Samples) > 0 && parsed.Samples[0].T.Before(parsed.StartedAt) {
+		// A sample that predates the recorded start means the start is unusable
+		// as the elapsed-time origin; the earliest sample is not.
+		parsed.StartedAt = parsed.Samples[0].T
+	}
+	return parsed
 }
 
 // looksLikeFIT checks the FIT header: a 12 or 14 byte header with the ".FIT"
@@ -320,11 +351,18 @@ func int64OrNil(value *int) *int64 {
 	return &converted
 }
 
+// truncateString cuts a string to at most max bytes. It never splits a rune, so
+// the value that lands in SQLite is always valid UTF-8 rather than a byte slice
+// whose tail byte JSON has to replace with U+FFFD.
 func truncateString(value string, max int) string {
 	if len(value) <= max {
 		return value
 	}
-	return value[:max]
+	cut := max
+	for cut > 0 && !utf8.RuneStart(value[cut]) {
+		cut--
+	}
+	return value[:cut]
 }
 
 // isUniqueViolation reports whether an error is a UNIQUE constraint failure.

@@ -28,11 +28,13 @@ type Querier interface {
 	CountRecentFailedRuns(ctx context.Context, userID int64, connectionKind string) (int64, error)
 	CountUnreadNotifications(ctx context.Context, userID int64) (int64, error)
 	CountUserActivities(ctx context.Context, userID int64) (int64, error)
-	CountUsers(ctx context.Context) (int64, error)
 	CreateAPIKey(ctx context.Context, userID int64, name string, keyHash []byte, prefix string, createdAt int64) (ApiKey, error)
 	CreateActivity(ctx context.Context, arg CreateActivityParams) (Activity, error)
 	CreateComment(ctx context.Context, activityID int64, userID int64, body string, createdAt int64) (Comment, error)
 	CreateEmailToken(ctx context.Context, userID int64, kind string, tokenHash []byte, expiresAt int64, createdAt int64) (int64, error)
+	// A row that has already been sent, or is still pending, keeps its place, so
+	// the handler can report a conflict. A row that ended in error is reset, which
+	// is the only way a failed export can ever be retried.
 	CreateExport(ctx context.Context, activityID int64, userID int64, target string, externalID string, createdAt int64, updatedAt int64) (int64, error)
 	CreateIdentity(ctx context.Context, userID int64, provider string, providerUserID string, email *string, createdAt int64) (AuthIdentity, error)
 	CreateMedia(ctx context.Context, arg CreateMediaParams) (Medium, error)
@@ -80,7 +82,6 @@ type Querier interface {
 	InsertLike(ctx context.Context, activityID int64, userID int64, createdAt int64) error
 	InvalidateEmailTokens(ctx context.Context, consumedAt *int64, userID int64, kind string) (int64, error)
 	ListAPIKeys(ctx context.Context, userID int64) ([]ApiKey, error)
-	ListActiveAvatarIDs(ctx context.Context, userIds []int64) ([]ListActiveAvatarIDsRow, error)
 	// The CASE expression below is the SQL twin of social.VisibilityAllows: it
 	// resolves an activity's `default` visibility to its owner's
 	// activities_visibility, then decides whether the viewer is allowed. The two
@@ -108,18 +109,17 @@ type Querier interface {
 	ListActivityPoints(ctx context.Context, activityID int64) ([]ActivityPoint, error)
 	ListComments(ctx context.Context, activityID int64, beforeID int64, limitCount int64) ([]ListCommentsRow, error)
 	ListConnectionsForUser(ctx context.Context, userID int64) ([]Connection, error)
-	ListFollowers(ctx context.Context, viewerID int64, limitCount int64) ([]ListFollowersRow, error)
-	ListFollowing(ctx context.Context, viewerID int64, limitCount int64) ([]ListFollowingRow, error)
 	ListIdentitiesForUser(ctx context.Context, userID int64) ([]AuthIdentity, error)
 	ListImportRules(ctx context.Context, userID int64) ([]ImportRule, error)
-	ListMentionedUsers(ctx context.Context, commentID int64) ([]string, error)
 	ListMentionsForComments(ctx context.Context, commentIds []int64) ([]ListMentionsForCommentsRow, error)
 	ListNotifications(ctx context.Context, userID int64, beforeID int64, limitCount int64) ([]ListNotificationsRow, error)
 	ListPendingExports(ctx context.Context, limit int64) ([]ActivityExport, error)
-	ListPendingFollowRequests(ctx context.Context, viewerID int64, limitCount int64) ([]ListPendingFollowRequestsRow, error)
 	ListPointsForActivities(ctx context.Context, activityIds []int64) ([]ActivityPoint, error)
 	ListPrivacyZones(ctx context.Context, userID int64) ([]PrivacyZone, error)
 	ListRecentSyncRuns(ctx context.Context, userID int64, limit int64) ([]SyncRun, error)
+	// Only the intervals.icu kinds are importable: the sync worker speaks the
+	// intervals API, so a Strava row (whose stored credential is a Strava token)
+	// must never be handed to it.
 	ListSyncableConnections(ctx context.Context, nextAttemptAt *int64) ([]Connection, error)
 	MarkAllNotificationsRead(ctx context.Context, readAt *int64, userID int64) (int64, error)
 	MarkEmailVerified(ctx context.Context, updatedAt int64, iD int64) (int64, error)
@@ -129,9 +129,9 @@ type Querier interface {
 	SearchUsers(ctx context.Context, query string, limitCount int64) ([]User, error)
 	SoftDeleteComment(ctx context.Context, deletedAt *int64, iD int64) (int64, error)
 	SoftDeleteMedia(ctx context.Context, deletedAt *int64, iD int64) (int64, error)
-	SoftDeleteUserAvatars(ctx context.Context, deletedAt *int64, userID int64) (int64, error)
 	TouchAPIKey(ctx context.Context, lastUsedAt *int64, iD int64) error
 	UpdateActivity(ctx context.Context, arg UpdateActivityParams) (Activity, error)
+	UpdateConnectionAthleteID(ctx context.Context, externalAthleteID *string, updatedAt int64, iD int64) (int64, error)
 	UpdateConnectionError(ctx context.Context, lastError *string, nextAttemptAt *int64, updatedAt int64, iD int64) (int64, error)
 	UpdateConnectionSettings(ctx context.Context, autoExport bool, exportMessage string, updatedAt int64, userID int64, kind string) (int64, error)
 	UpdateConnectionSyncState(ctx context.Context, syncedFrom *int64, lastSuccessAt *int64, updatedAt int64, iD int64) (int64, error)

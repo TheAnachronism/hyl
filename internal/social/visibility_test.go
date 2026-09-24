@@ -115,7 +115,7 @@ func createUser(t *testing.T, ctx context.Context, queries *db.Queries, username
 	hash := "x"
 	user, err := queries.CreateUser(ctx, db.CreateUserParams{
 		Username: username, Email: username + "@example.com", DisplayName: username,
-		PasswordHash: &hash, EmailVerified: true, IsAdmin: false, CreatedAt: 1, UpdatedAt: 1,
+		PasswordHash: &hash, EmailVerified: true, CreatedAt: 1, UpdatedAt: 1,
 	})
 	if err != nil {
 		t.Fatalf("create user %s: %v", username, err)
