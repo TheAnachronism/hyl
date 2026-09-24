@@ -16,8 +16,8 @@ import (
 )
 
 // Connections disconnects one provider and refreshes that provider's tokens.
-// The settings route and the export drain call it; they do not implement the
-// cleanup or the token write themselves.
+// The settings route, the export drain, and the Strava webhook call it. They
+// do not implement the cleanup or the token write themselves.
 type Connections struct {
 	Pool   *sql.DB
 	Q      *db.Queries
@@ -46,7 +46,41 @@ func (c *Connections) Disconnect(ctx context.Context, userID int64, kind string)
 		return err
 	}
 	c.revoke(ctx, conn)
+	return c.remove(ctx, userID, kind)
+}
 
+// Deauthorize applies a Strava deauthorization claim. Strava's token endpoint
+// is the authority: a rejected refresh token runs the same local removal as
+// Disconnect and does not ask Strava to revoke again. A refresh Strava still
+// accepts is stored through the refresh operation and the connection stays. A
+// transient failure changes nothing.
+func (c *Connections) Deauthorize(ctx context.Context, conn db.Connection) error {
+	refreshToken, err := c.Cipher.DecryptString(conn.RefreshTokenCipher)
+	if err != nil || refreshToken == "" {
+		c.Log.Warn("cannot confirm a deauthorization without a stored refresh token",
+			zap.Int64("user_id", conn.UserID), zap.Error(err))
+		return nil
+	}
+	base := c.tokenBase
+	if base == "" {
+		base = stravaOAuthBase(c.Cfg)
+	}
+	tokens, err := refreshStravaToken(ctx, base, c.Cfg, refreshToken)
+	if err != nil {
+		if stravaRejectedCredential(err) {
+			return c.remove(ctx, conn.UserID, conn.Kind)
+		}
+		c.Log.Warn("could not confirm a strava deauthorization", zap.Error(err))
+		return nil
+	}
+	_, err = c.storeRotated(ctx, conn, tokens, time.Now())
+	return err
+}
+
+// remove deletes one provider kind, its import rules, and, only when the kind
+// owns an export target, the pending exports for that target. The three
+// deletes commit together.
+func (c *Connections) remove(ctx context.Context, userID int64, kind string) error {
 	tx, err := c.Pool.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -96,6 +130,13 @@ func (c *Connections) Refresh(ctx context.Context, conn db.Connection, now time.
 	if err != nil {
 		return conn, err
 	}
+	return c.storeRotated(ctx, conn, tokens, now)
+}
+
+// storeRotated persists a pair Strava has already accepted. The write is
+// retried once; a failure is logged and returned so the caller does not treat
+// the invalidated refresh token as current.
+func (c *Connections) storeRotated(ctx context.Context, conn db.Connection, tokens StravaTokens, now time.Time) (db.Connection, error) {
 	access, err := c.Cipher.EncryptString(tokens.AccessToken)
 	if err != nil {
 		return conn, err
@@ -104,9 +145,13 @@ func (c *Connections) Refresh(ctx context.Context, conn db.Connection, now time.
 	if err != nil {
 		return conn, err
 	}
+	return c.storeEncrypted(ctx, conn, access, rotated, tokens.ExpiresAt, now.Unix())
+}
+
+func (c *Connections) storeEncrypted(ctx context.Context, conn db.Connection, access, rotated []byte, expiresAt, now int64) (db.Connection, error) {
 	var last error
 	for range tokenStoreAttempts {
-		affected, err := c.Q.UpdateConnectionTokens(ctx, access, rotated, &tokens.ExpiresAt, now.Unix(), conn.ID)
+		affected, err := c.Q.UpdateConnectionTokens(ctx, access, rotated, &expiresAt, now, conn.ID)
 		if err != nil || affected == 0 {
 			if err == nil {
 				err = errors.New("rotated strava tokens were not stored")
@@ -116,7 +161,7 @@ func (c *Connections) Refresh(ctx context.Context, conn db.Connection, now time.
 		}
 		conn.AccessTokenCipher = access
 		conn.RefreshTokenCipher = rotated
-		conn.TokenExpiresAt = &tokens.ExpiresAt
+		conn.TokenExpiresAt = &expiresAt
 		return conn, nil
 	}
 	c.Log.Error("storing the rotated strava tokens failed", zap.Error(last), zap.Int64("connection_id", conn.ID))

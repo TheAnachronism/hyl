@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +33,9 @@ type disconnectHarness struct {
 	failed       db.Activity
 	revokes      int
 	revokeStatus int
+	cipher       *secrets.Cipher
+	tokenStatus  int
+	tokenBody    string
 }
 
 func newDisconnectHarness(t *testing.T) *disconnectHarness {
@@ -102,11 +106,21 @@ func newDisconnectHarness(t *testing.T) *disconnectHarness {
 	queueExport(t, queries, failed, exportStatusError)
 
 	h := &disconnectHarness{
-		queries: queries, pool: pool, user: user,
+		queries: queries, pool: pool, user: user, cipher: cipher,
 		pending: pending, sent: sent, failed: failed,
 		revokeStatus: http.StatusNoContent,
 	}
 	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/oauth/token") {
+			w.Header().Set("Content-Type", "application/json")
+			if h.tokenStatus != 0 {
+				w.WriteHeader(h.tokenStatus)
+			}
+			if h.tokenBody != "" {
+				_, _ = w.Write([]byte(h.tokenBody))
+			}
+			return
+		}
 		h.revokes++
 		w.WriteHeader(h.revokeStatus)
 	}))
@@ -306,6 +320,182 @@ func TestDisconnectKeepsLocalRemovalWhenRevokeFails(t *testing.T) {
 	if h.revokes != 1 {
 		t.Fatalf("provider revoke calls = %d, want 1", h.revokes)
 	}
+}
+
+func TestConfirmedStravaDeauthorizationRemovesConnectionWithoutRevoking(t *testing.T) {
+	h := newDisconnectHarness(t)
+	h.tokenStatus = http.StatusBadRequest
+	h.tokenBody = `{"message":"Bad Request","errors":[{"resource":"RefreshToken","field":"refresh_token","code":"invalid"}]}`
+	ctx := context.Background()
+	conn, err := h.queries.GetConnection(ctx, h.user.ID, KindStravaOAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.connections.Deauthorize(ctx, conn); err != nil {
+		t.Fatalf("deauthorize: %v", err)
+	}
+
+	if _, err := h.queries.GetConnection(ctx, h.user.ID, KindStravaOAuth); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("strava connection err = %v, want gone", err)
+	}
+	if _, err := h.queries.GetConnection(ctx, h.user.ID, KindIntervalsOAuth); err != nil {
+		t.Fatalf("intervals connection: %v", err)
+	}
+	rules, err := h.queries.ListImportRules(ctx, h.user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var intervalsRule bool
+	for _, rule := range rules {
+		if rule.ConnectionKind == KindStravaOAuth {
+			t.Fatalf("strava import rule remained: %+v", rule)
+		}
+		if rule.ConnectionKind == KindIntervalsOAuth {
+			intervalsRule = true
+		}
+	}
+	if !intervalsRule {
+		t.Fatal("intervals import rule was removed")
+	}
+	if _, err := h.queries.GetExport(ctx, h.pending.ID, exportTargetStrava); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("pending export err = %v, want gone", err)
+	}
+	sent, err := h.queries.GetExport(ctx, h.sent.ID, exportTargetStrava)
+	if err != nil {
+		t.Fatalf("sent export: %v", err)
+	}
+	if sent.Status != exportStatusSent {
+		t.Fatalf("sent status = %q", sent.Status)
+	}
+	failed, err := h.queries.GetExport(ctx, h.failed.ID, exportTargetStrava)
+	if err != nil {
+		t.Fatalf("errored export: %v", err)
+	}
+	if failed.Status != exportStatusError {
+		t.Fatalf("errored status = %q", failed.Status)
+	}
+	if h.revokes != 0 {
+		t.Fatalf("provider revoke calls = %d, want the deauthorization not to revoke again", h.revokes)
+	}
+}
+
+func TestForgedStravaDeauthorizationKeepsConnectionAndStoresRotation(t *testing.T) {
+	h := newDisconnectHarness(t)
+	h.tokenBody = `{"access_token":"access-2","refresh_token":"refresh-2","expires_at":1893456000}`
+	ctx := context.Background()
+	conn, err := h.queries.GetConnection(ctx, h.user.ID, KindStravaOAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.connections.Deauthorize(ctx, conn); err != nil {
+		t.Fatalf("deauthorize: %v", err)
+	}
+
+	if _, err := h.queries.GetConnection(ctx, h.user.ID, KindStravaOAuth); err != nil {
+		t.Fatalf("strava connection: %v", err)
+	}
+	row, err := h.queries.GetExport(ctx, h.pending.ID, exportTargetStrava)
+	if err != nil {
+		t.Fatalf("pending export: %v", err)
+	}
+	if row.Status != exportStatusPending {
+		t.Fatalf("pending export status = %q", row.Status)
+	}
+	stored, err := h.cipher.DecryptString(mustConnection(t, h, ctx).RefreshTokenCipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored != "refresh-2" {
+		t.Fatalf("stored refresh token = %q, want the rotated pair", stored)
+	}
+	if h.revokes != 0 {
+		t.Fatalf("provider revoke calls = %d, want none", h.revokes)
+	}
+}
+
+func TestTransientStravaDeauthorizationChangesNothing(t *testing.T) {
+	h := newDisconnectHarness(t)
+	h.tokenStatus = http.StatusInternalServerError
+	h.tokenBody = `{"message":"unavailable"}`
+	ctx := context.Background()
+	conn, err := h.queries.GetConnection(ctx, h.user.ID, KindStravaOAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.connections.Deauthorize(ctx, conn); err != nil {
+		t.Fatalf("deauthorize: %v", err)
+	}
+
+	if _, err := h.queries.GetConnection(ctx, h.user.ID, KindStravaOAuth); err != nil {
+		t.Fatalf("strava connection: %v", err)
+	}
+	row, err := h.queries.GetExport(ctx, h.pending.ID, exportTargetStrava)
+	if err != nil {
+		t.Fatalf("pending export: %v", err)
+	}
+	if row.Status != exportStatusPending {
+		t.Fatalf("pending export status = %q", row.Status)
+	}
+	stored, err := h.cipher.DecryptString(mustConnection(t, h, ctx).RefreshTokenCipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored != "strava-refresh" {
+		t.Fatalf("stored refresh token = %q, want the original pair", stored)
+	}
+	if h.revokes != 0 {
+		t.Fatalf("provider revoke calls = %d, want none", h.revokes)
+	}
+}
+
+func TestDeauthorizationStoreFailureReportsError(t *testing.T) {
+	h := newDisconnectHarness(t)
+	core, logs := observer.New(zapcore.ErrorLevel)
+	h.connections.Log = zap.New(core)
+	h.tokenBody = `{"access_token":"access-2","refresh_token":"refresh-2","expires_at":1893456000}`
+	failTokenWrites(t, h.pool, 2)
+	ctx := context.Background()
+	conn, err := h.queries.GetConnection(ctx, h.user.ID, KindStravaOAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.connections.Deauthorize(ctx, conn); err == nil {
+		t.Fatal("deauthorize succeeded after the token write kept failing")
+	}
+	if logs.FilterMessage("storing the rotated strava tokens failed").Len() != 1 {
+		t.Fatalf("error logs = %d, want the failed store logged", logs.Len())
+	}
+
+	if _, err := h.queries.GetConnection(ctx, h.user.ID, KindStravaOAuth); err != nil {
+		t.Fatalf("strava connection: %v", err)
+	}
+	row, err := h.queries.GetExport(ctx, h.pending.ID, exportTargetStrava)
+	if err != nil {
+		t.Fatalf("pending export: %v", err)
+	}
+	if row.Status != exportStatusPending {
+		t.Fatalf("pending export status = %q", row.Status)
+	}
+	stored, err := h.cipher.DecryptString(mustConnection(t, h, ctx).RefreshTokenCipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored != "strava-refresh" {
+		t.Fatalf("stored refresh token = %q, want the unstored rotation not treated as current", stored)
+	}
+}
+
+func mustConnection(t *testing.T, h *disconnectHarness, ctx context.Context) db.Connection {
+	t.Helper()
+	conn, err := h.queries.GetConnection(ctx, h.user.ID, KindStravaOAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return conn
 }
 
 func TestDisconnectTransactionFailureRemovesNothing(t *testing.T) {

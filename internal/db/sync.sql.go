@@ -116,18 +116,6 @@ func (q *Queries) DeletePendingExportsForTarget(ctx context.Context, userID int6
 	return result.RowsAffected()
 }
 
-const deletePendingExportsForUser = `-- name: DeletePendingExportsForUser :execrows
-DELETE FROM activity_exports WHERE user_id = ? AND status = 'pending'
-`
-
-func (q *Queries) DeletePendingExportsForUser(ctx context.Context, userID int64) (int64, error) {
-	result, err := q.db.ExecContext(ctx, deletePendingExportsForUser, userID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
 const finishSyncRun = `-- name: FinishSyncRun :execrows
 UPDATE sync_runs
 SET finished_at = ?, imported = ?, skipped = ?, error = ?
