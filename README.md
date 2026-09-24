@@ -208,8 +208,9 @@ either half missing is not registered and `/auth/<provider>` returns 404.
   writes to intervals.icu.
 - **Webhook.** Set `HYL_INTERVALS_WEBHOOK_SECRET` to the same shared secret you
   configure on intervals' side. hyl verifies it in constant time on
-  `POST /webhooks/intervals` and triggers a re-sync for the matching athlete;
-  with the variable unset the route answers 404.
+  `POST /webhooks/intervals`; uploads and analyses trigger a re-sync, while
+  deletions remove the matching imported activity, its photo files, and prevent
+  a later re-import. With the variable unset the route answers 404.
 
 ## Developer API
 

@@ -145,7 +145,7 @@ func serve() error {
 	}
 	worker := syncpkg.NewWorker(pool, cfg, log, cipher, activityStore)
 	worker.SetExporter(syncpkg.NewExporter(pool, cfg, log, cipher))
-	activityHandlers := activity.NewHandlers(pool, activityStore, mediaHandlers, log)
+	activityHandlers := activity.NewHandlers(pool, activityStore)
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()
 	go worker.Run(workerCtx)
@@ -162,7 +162,7 @@ func serve() error {
 		Social:       social.New(pool, log),
 		Media:        mediaHandlers,
 		Sync:         syncpkg.NewHandlers(pool, cfg, log, cipher, worker),
-		Webhooks:     webhooks.NewIntervals(pool, cfg, log, worker, activityHandlers),
+		Webhooks:     webhooks.NewIntervals(pool, cfg, log, worker, activityStore),
 		StravaEvents: webhooks.NewStrava(pool, cfg, log, cipher),
 		Static:       static,
 	})
