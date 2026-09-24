@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -14,8 +15,9 @@ import (
 	"github.com/markbeep/hyl/internal/secrets"
 )
 
-// Connections disconnects one provider for an account. The settings route calls
-// it; it does not implement the cleanup itself.
+// Connections disconnects one provider and refreshes that provider's tokens.
+// The settings route and the export drain call it; they do not implement the
+// cleanup or the token write themselves.
 type Connections struct {
 	Pool   *sql.DB
 	Q      *db.Queries
@@ -27,6 +29,8 @@ type Connections struct {
 	// Empty and nil use the production host and client.
 	intervalsBase string
 	httpClient    *http.Client
+	// tokenBase points a refresh at a fake. Empty uses the configured OAuth host.
+	tokenBase string
 }
 
 // Disconnect removes one provider kind: its connection, its import rules, and,
@@ -66,6 +70,57 @@ func (c *Connections) Disconnect(ctx context.Context, userID int64, kind string)
 		return apperr.NotFound("no such connection")
 	}
 	return tx.Commit()
+}
+
+// tokenStoreAttempts is the write of a pair Strava has already accepted, plus
+// one retry. A single database blip must not drop the only refresh token Strava
+// will still accept.
+const tokenStoreAttempts = 2
+
+// Refresh rotates a Strava token that is inside the refresh window. The pair
+// Strava has already accepted is stored before the connection is treated as
+// updated. A failed store is retried, then returned as an error.
+func (c *Connections) Refresh(ctx context.Context, conn db.Connection, now time.Time) (db.Connection, error) {
+	if conn.TokenExpiresAt != nil && *conn.TokenExpiresAt-now.Unix() > stravaRefreshWindow {
+		return conn, nil
+	}
+	refreshToken, err := c.Cipher.DecryptString(conn.RefreshTokenCipher)
+	if err != nil || refreshToken == "" {
+		return conn, apperr.BadRequest("this Strava connection has no refresh token; reconnect it")
+	}
+	base := c.tokenBase
+	if base == "" {
+		base = stravaOAuthBase(c.Cfg)
+	}
+	tokens, err := refreshStravaToken(ctx, base, c.Cfg, refreshToken)
+	if err != nil {
+		return conn, err
+	}
+	access, err := c.Cipher.EncryptString(tokens.AccessToken)
+	if err != nil {
+		return conn, err
+	}
+	rotated, err := c.Cipher.EncryptString(tokens.RefreshToken)
+	if err != nil {
+		return conn, err
+	}
+	var last error
+	for range tokenStoreAttempts {
+		affected, err := c.Q.UpdateConnectionTokens(ctx, access, rotated, &tokens.ExpiresAt, now.Unix(), conn.ID)
+		if err != nil || affected == 0 {
+			if err == nil {
+				err = errors.New("rotated strava tokens were not stored")
+			}
+			last = err
+			continue
+		}
+		conn.AccessTokenCipher = access
+		conn.RefreshTokenCipher = rotated
+		conn.TokenExpiresAt = &tokens.ExpiresAt
+		return conn, nil
+	}
+	c.Log.Error("storing the rotated strava tokens failed", zap.Error(last), zap.Int64("connection_id", conn.ID))
+	return conn, last
 }
 
 // exportTargetFor reports the export target a provider kind owns. intervals.icu

@@ -479,3 +479,69 @@ func TestExportSendsSportType(t *testing.T) {
 		t.Fatalf("sport_type = %q, want GravelRide", got)
 	}
 }
+
+func TestExportStoreFailureReschedules(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{
+			"access_token": "access-2", "refresh_token": "refresh-2",
+			"expires_at": time.Now().Add(6 * time.Hour).Unix(),
+		})
+	}))
+	defer server.Close()
+
+	harness := newExportHarness(t)
+	failTokenWrites(t, harness.pool, 2)
+	harness.exporter.tokenBaseURL = server.URL
+	harness.exporter.Cfg.StravaClientID = "client-id"
+	harness.exporter.Cfg.StravaClientSecret = "client-secret"
+
+	harness.exporter.Drain(context.Background())
+
+	row, err := harness.queries.GetExport(context.Background(), harness.activity.ID, exportTargetStrava)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Status != exportStatusPending {
+		t.Fatalf("status = %q, want the export rescheduled", row.Status)
+	}
+	if row.LastError != nil && *row.LastError == "reauthorize" {
+		t.Fatal("a failed token write marked the export as needing reauthorization")
+	}
+	conn, err := harness.queries.GetConnection(context.Background(), harness.user.ID, KindStravaOAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conn.LastError != nil && *conn.LastError == "reauthorize" {
+		t.Fatal("a failed token write marked the connection as needing reauthorization")
+	}
+}
+
+func TestExportMarksReauthorizeWhenStravaRejectsRefresh(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"message":"Bad Request","errors":[{"resource":"RefreshToken","field":"refresh_token","code":"invalid"}]}`))
+	}))
+	defer server.Close()
+
+	harness := newExportHarness(t)
+	harness.exporter.tokenBaseURL = server.URL
+	harness.exporter.Cfg.StravaClientID = "client-id"
+	harness.exporter.Cfg.StravaClientSecret = "client-secret"
+
+	harness.exporter.Drain(context.Background())
+
+	row, err := harness.queries.GetExport(context.Background(), harness.activity.ID, exportTargetStrava)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Status != exportStatusError || row.LastError == nil || *row.LastError != "reauthorize" {
+		t.Fatalf("export = status %q error %v, want reauthorize", row.Status, row.LastError)
+	}
+	conn, err := harness.queries.GetConnection(context.Background(), harness.user.ID, KindStravaOAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conn.LastError == nil || *conn.LastError != "reauthorize" {
+		t.Fatalf("connection last error = %v, want reauthorize", conn.LastError)
+	}
+}

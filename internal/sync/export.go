@@ -41,10 +41,11 @@ const (
 // Exporter drains the activity_exports queue. It runs on the same goroutine as
 // the import worker, so Strava never sees more than one request at a time.
 type Exporter struct {
-	Q      *db.Queries
-	Cfg    config.Config
-	Log    *zap.Logger
-	Cipher *secrets.Cipher
+	Q           *db.Queries
+	Cfg         config.Config
+	Log         *zap.Logger
+	Cipher      *secrets.Cipher
+	connections *Connections
 
 	// tokenBaseURL is the OAuth endpoint used for refreshes; tests point it at
 	// a fake server.
@@ -63,9 +64,11 @@ type Exporter struct {
 
 // NewExporter builds the export drainer.
 func NewExporter(pool *sql.DB, cfg config.Config, log *zap.Logger, cipher *secrets.Cipher) *Exporter {
+	q := db.New(pool)
 	return &Exporter{
-		Q: db.New(pool), Cfg: cfg, Log: log, Cipher: cipher,
+		Q: q, Cfg: cfg, Log: log, Cipher: cipher,
 		tokenBaseURL: stravaOAuthBase(cfg),
+		connections:  &Connections{Pool: pool, Q: q, Cfg: cfg, Log: log, Cipher: cipher},
 		newClient:    func(token string) *StravaClient { return NewStravaClient(cfg, token) },
 		sleep:        sleepContext,
 	}
@@ -122,10 +125,13 @@ func (e *Exporter) exportOne(ctx context.Context, row db.ActivityExport) (stop b
 	}
 
 	now := time.Now()
-	conn, err = ensureStravaToken(ctx, e.tokenBaseURL, e.Cfg, e.Q, e.Cipher, conn, now)
+	e.connections.Cfg = e.Cfg
+	e.connections.Log = e.Log
+	e.connections.tokenBase = e.tokenBaseURL
+	conn, err = e.connections.Refresh(ctx, conn, now)
 	if err != nil {
-		var providerErr *ProviderError
-		if errors.As(err, &providerErr) && providerErr.NeedsReauthorization() {
+		if stravaRejectedCredential(err) {
+			e.markConnectionReauthorize(ctx, conn)
 			return true, e.markError(ctx, row, "reauthorize")
 		}
 		// A refresh that fails for any other reason is retried, and eventually
@@ -186,7 +192,34 @@ func (e *Exporter) exportOne(ctx context.Context, row db.ActivityExport) (stop b
 	}
 }
 
+// stravaRejectedCredential reports a token response that means the stored
+// refresh token is no longer accepted. Strava uses 400 for an invalid refresh
+// token, and 401 or 403 when the grant is gone.
+func stravaRejectedCredential(err error) bool {
+	var providerErr *ProviderError
+	if !errors.As(err, &providerErr) {
+		return false
+	}
+	switch providerErr.StatusCode {
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden:
+		return true
+	default:
+		return false
+	}
+}
+
+// markConnectionReauthorize parks the Strava connection until the athlete
+// reconnects. A failed token write must not call this.
+func (e *Exporter) markConnectionReauthorize(ctx context.Context, conn db.Connection) {
+	message := "reauthorize"
+	nextAt := time.Now().Add(backoffMax).Unix()
+	if _, err := e.Q.UpdateConnectionError(ctx, &message, &nextAt, time.Now().Unix(), conn.ID); err != nil {
+		e.Log.Error("recording a strava reauthorization failed", zap.Error(err))
+	}
+}
+
 // handleProviderError classifies a provider failure.
+
 func (e *Exporter) handleProviderError(ctx context.Context, row db.ActivityExport, err error) (bool, error) {
 	var providerErr *ProviderError
 	if !errors.As(err, &providerErr) {

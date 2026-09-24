@@ -3,13 +3,17 @@ package sync
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/markbeep/hyl/internal/config"
 	"github.com/markbeep/hyl/internal/db"
@@ -318,25 +322,25 @@ func TestDisconnectTransactionFailureRemovesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.connections.Disconnect(ctx, h.user.ID, KindIntervalsAPIKey); err == nil {
+	if err := h.connections.Disconnect(ctx, h.user.ID, KindStravaOAuth); err == nil {
 		t.Fatal("disconnect succeeded after the connection delete failed")
 	}
 
-	if _, err := h.queries.GetConnection(ctx, h.user.ID, KindIntervalsAPIKey); err != nil {
-		t.Fatalf("api key connection: %v", err)
+	if _, err := h.queries.GetConnection(ctx, h.user.ID, KindStravaOAuth); err != nil {
+		t.Fatalf("strava connection: %v", err)
 	}
 	rules, err := h.queries.ListImportRules(ctx, h.user.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var apiRule bool
+	var stravaRule bool
 	for _, rule := range rules {
-		if rule.ConnectionKind == KindIntervalsAPIKey {
-			apiRule = true
+		if rule.ConnectionKind == KindStravaOAuth {
+			stravaRule = true
 		}
 	}
-	if !apiRule {
-		t.Fatal("api key import rule was removed")
+	if !stravaRule {
+		t.Fatal("strava import rule was removed")
 	}
 	row, err := h.queries.GetExport(ctx, h.pending.ID, exportTargetStrava)
 	if err != nil {
@@ -344,5 +348,214 @@ func TestDisconnectTransactionFailureRemovesNothing(t *testing.T) {
 	}
 	if row.Status != exportStatusPending {
 		t.Fatalf("pending export status = %q", row.Status)
+	}
+}
+
+func TestRefreshStoresRotatedPair(t *testing.T) {
+	h := newRefreshHarness(t, tokenPairHandler(t, "access-2", "refresh-2"))
+	ctx := context.Background()
+	before, err := h.queries.GetConnection(ctx, h.user.ID, KindStravaOAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := h.connections.Refresh(ctx, before, time.Now())
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	stored := storedRefresh(t, h, ctx)
+	if stored != "refresh-2" {
+		t.Fatalf("stored refresh token = %q, want the rotated pair", stored)
+	}
+	got, err := h.cipher.DecryptString(updated.RefreshTokenCipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "refresh-2" {
+		t.Fatalf("returned refresh token = %q, want the stored pair", got)
+	}
+}
+
+func TestRefreshRetriesFailedTokenWrite(t *testing.T) {
+	h := newRefreshHarness(t, tokenPairHandler(t, "access-2", "refresh-2"))
+	failTokenWrites(t, h.pool, 1)
+	ctx := context.Background()
+	before, err := h.queries.GetConnection(ctx, h.user.ID, KindStravaOAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.connections.Refresh(ctx, before, time.Now()); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if stored := storedRefresh(t, h, ctx); stored != "refresh-2" {
+		t.Fatalf("stored refresh token = %q, want the rotated pair after retry", stored)
+	}
+}
+
+func TestRefreshStoreFailureReturnsError(t *testing.T) {
+	h := newRefreshHarness(t, tokenPairHandler(t, "access-2", "refresh-2"))
+	failTokenWrites(t, h.pool, 2)
+	ctx := context.Background()
+	before, err := h.queries.GetConnection(ctx, h.user.ID, KindStravaOAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldExpiry := before.TokenExpiresAt
+
+	updated, err := h.connections.Refresh(ctx, before, time.Now())
+	if err == nil {
+		t.Fatal("refresh succeeded after the token write kept failing")
+	}
+	if h.logs.FilterMessage("storing the rotated strava tokens failed").Len() != 1 {
+		t.Fatalf("error logs = %d, want the failed store logged", h.logs.Len())
+	}
+	if stored := storedRefresh(t, h, ctx); stored != "refresh-1" {
+		t.Fatalf("stored refresh token = %q, want the unstored rotation not treated as current", stored)
+	}
+	got, err := h.cipher.DecryptString(updated.RefreshTokenCipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "refresh-1" {
+		t.Fatalf("returned refresh token = %q, want the connection left unupdated", got)
+	}
+	after, err := h.queries.GetConnection(ctx, h.user.ID, KindStravaOAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if (oldExpiry == nil) != (after.TokenExpiresAt == nil) || (oldExpiry != nil && *oldExpiry != *after.TokenExpiresAt) {
+		t.Fatalf("expiry changed from %v to %v", oldExpiry, after.TokenExpiresAt)
+	}
+}
+
+type refreshHarness struct {
+	connections *Connections
+	queries     *db.Queries
+	pool        *sql.DB
+	cipher      *secrets.Cipher
+	user        db.User
+	logs        *observer.ObservedLogs
+}
+
+func newRefreshHarness(t *testing.T, handler http.HandlerFunc) *refreshHarness {
+	t.Helper()
+	ctx := context.Background()
+	pool, err := db.Open(config.Config{DBPath: filepath.Join(t.TempDir(), "hyl.db")})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = pool.Close() })
+	if err := db.Migrate(pool); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	fake := httptest.NewServer(handler)
+	t.Cleanup(fake.Close)
+
+	cfg := config.Config{
+		BaseURL: "http://localhost:8080", Version: "test",
+		SecretKey:      "0123456789abcdef0123456789abcdef",
+		StravaClientID: "client-id", StravaClientSecret: "client-secret",
+		StravaOAuthBase: fake.URL,
+	}
+	cipher, err := secrets.New(cfg.SecretKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queries := db.New(pool)
+	user, err := queries.CreateUser(ctx, db.CreateUserParams{
+		Username: "athlete", Email: "athlete@example.com", DisplayName: "Athlete", CreatedAt: 1, UpdatedAt: 1,
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	access, err := cipher.EncryptString("access-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refresh, err := cipher.EncryptString("refresh-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expires := time.Now().Unix()
+	athleteID := "42"
+	if _, err := queries.UpsertConnection(ctx, db.UpsertConnectionParams{
+		UserID: user.ID, Kind: KindStravaOAuth, ExternalAthleteID: &athleteID,
+		AccessTokenCipher: access, RefreshTokenCipher: refresh, TokenExpiresAt: &expires,
+		AutoExport: false, ExportMessage: "Imported from hyl", CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("create connection: %v", err)
+	}
+	core, logs := observer.New(zapcore.ErrorLevel)
+	return &refreshHarness{
+		connections: &Connections{Pool: pool, Q: queries, Cfg: cfg, Log: zap.New(core), Cipher: cipher},
+		queries:     queries, pool: pool, cipher: cipher, user: user, logs: logs,
+	}
+}
+
+func tokenPairHandler(t *testing.T, access, refresh string) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": access, "refresh_token": refresh,
+			"expires_at": time.Now().Add(6 * time.Hour).Unix(),
+		})
+	}
+}
+
+func storedRefresh(t *testing.T, h *refreshHarness, ctx context.Context) string {
+	t.Helper()
+	conn, err := h.queries.GetConnection(ctx, h.user.ID, KindStravaOAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refresh, err := h.cipher.DecryptString(conn.RefreshTokenCipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return refresh
+}
+
+func failTokenWrites(t *testing.T, pool *sql.DB, times int) {
+	t.Helper()
+	if _, err := pool.Exec(`CREATE TABLE token_write_fails (remaining INTEGER NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(`INSERT INTO token_write_fails (remaining) VALUES (?)`, times); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(`CREATE TRIGGER fail_token_write
+		BEFORE UPDATE OF access_token_cipher ON connections
+		WHEN (SELECT remaining FROM token_write_fails) > 0
+		BEGIN
+			UPDATE token_write_fails SET remaining = remaining - 1;
+			SELECT RAISE(FAIL, 'token write failed');
+		END`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRefreshDoesNotTreatUnstoredPairAsCurrent(t *testing.T) {
+	h := newRefreshHarness(t, tokenPairHandler(t, "access-2", "refresh-2"))
+	ctx := context.Background()
+	before, err := h.queries.GetConnection(ctx, h.user.ID, KindStravaOAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.pool.ExecContext(ctx, `DELETE FROM connections WHERE id = ?`, before.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := h.connections.Refresh(ctx, before, time.Now())
+	if err == nil {
+		t.Fatal("refresh succeeded without storing the rotated pair")
+	}
+	got, err := h.cipher.DecryptString(updated.RefreshTokenCipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "refresh-1" {
+		t.Fatalf("returned refresh token = %q, want the unstored pair not treated as current", got)
 	}
 }

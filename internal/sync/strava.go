@@ -15,8 +15,6 @@ import (
 
 	"github.com/markbeep/hyl/internal/apperr"
 	"github.com/markbeep/hyl/internal/config"
-	"github.com/markbeep/hyl/internal/db"
-	"github.com/markbeep/hyl/internal/secrets"
 )
 
 // Strava serves its REST API and its OAuth endpoints from separate bases as of
@@ -336,35 +334,4 @@ func (c *StravaClient) do(req *http.Request, out any) error {
 		return nil
 	}
 	return json.Unmarshal(payload, out)
-}
-
-// ensureStravaToken refreshes the access token when it is close to expiry and
-// persists the rotated pair.
-func ensureStravaToken(ctx context.Context, baseURL string, cfg config.Config, q *db.Queries, cipher *secrets.Cipher, conn db.Connection, now time.Time) (db.Connection, error) {
-	if conn.TokenExpiresAt != nil && *conn.TokenExpiresAt-now.Unix() > stravaRefreshWindow {
-		return conn, nil
-	}
-	refreshToken, err := cipher.DecryptString(conn.RefreshTokenCipher)
-	if err != nil || refreshToken == "" {
-		return conn, apperr.BadRequest("this Strava connection has no refresh token; reconnect it")
-	}
-	tokens, err := refreshStravaToken(ctx, baseURL, cfg, refreshToken)
-	if err != nil {
-		return conn, err
-	}
-	access, err := cipher.EncryptString(tokens.AccessToken)
-	if err != nil {
-		return conn, err
-	}
-	rotated, err := cipher.EncryptString(tokens.RefreshToken)
-	if err != nil {
-		return conn, err
-	}
-	if _, err := q.UpdateConnectionTokens(ctx, access, rotated, &tokens.ExpiresAt, now.Unix(), conn.ID); err != nil {
-		return conn, err
-	}
-	conn.AccessTokenCipher = access
-	conn.RefreshTokenCipher = rotated
-	conn.TokenExpiresAt = &tokens.ExpiresAt
-	return conn, nil
 }
