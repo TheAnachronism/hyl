@@ -135,6 +135,9 @@ func serve() error {
 	// Every ingest queues its automatic Strava export through this hook, so
 	// manual uploads, the developer API and provider sync all behave alike.
 	activityStore.ExportQueue = syncpkg.NewExportQueuer(db.New(pool)).Queue
+	// Media rows cascade with the activity, so the store captures their IDs
+	// before commit and hands them to this post-commit cleanup hook.
+	activityStore.RemovePhotos = mediaHandlers.RemovePhotos
 
 	cipher, err := secrets.New(cfg.SecretKey)
 	if err != nil {

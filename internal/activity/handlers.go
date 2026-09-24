@@ -255,8 +255,8 @@ func (h *Handlers) Update(c echo.Context) error {
 	return c.JSON(http.StatusOK, detail)
 }
 
-// Delete removes an activity, tombstones it so it cannot be re-imported, and
-// cleans up its photo files.
+// Delete delegates the owner's activity deletion to the store, which records
+// its tombstone and cleans up photo files after committing.
 func (h *Handlers) Delete(c echo.Context) error {
 	user, err := reqctx.RequireUser(c)
 	if err != nil {
@@ -266,37 +266,8 @@ func (h *Handlers) Delete(c echo.Context) error {
 	if err != nil {
 		return err
 	}
-	ctx := c.Request().Context()
-
-	activity, err := h.Q.GetActivity(ctx, id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return apperr.NotFound("no such activity")
-	}
-	if err != nil {
+	if err := h.Store.Delete(c.Request().Context(), user.ID, id); err != nil {
 		return err
-	}
-	if activity.UserID != user.ID {
-		return apperr.Forbidden("only the owner can delete this activity")
-	}
-
-	tx, err := h.Pool.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	queries := h.Q.WithTx(tx)
-	if err := queries.CreateTombstone(ctx, activity.UserID, activity.DedupeHash, time.Now().Unix()); err != nil {
-		return err
-	}
-	if _, err := queries.DeleteActivity(ctx, id); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	if h.Media != nil {
-		h.Media.RemoveActivityMedia(ctx, id)
 	}
 	return c.NoContent(http.StatusNoContent)
 }

@@ -8,7 +8,9 @@ both the REST API and the embedded SolidJS frontend.
 - **Activities.** Upload FIT or GPX files (optionally gzipped) from the web UI
   or the developer API. Metrics are computed server-side, sports are normalised
   to `run`, `ride`, `swim`, `hike`, `walk`, `ski`, `row` and `other`, and
-  per-user privacy zones hide chosen areas from other viewers.
+  per-user privacy zones hide chosen areas from other viewers. Deleting an
+  activity removes its photo files and prevents that activity from being
+  re-imported or uploaded again by the same athlete.
 - **Social feed.** Follows (with approval for private accounts), likes,
   comments, @mentions and notifications, with per-activity visibility.
 - **Import from intervals.icu.** Connect with a personal API key or through

@@ -290,6 +290,18 @@ func (h *Handlers) RemoveActivityMedia(ctx context.Context, activityID int64) {
 	}
 }
 
+// RemovePhotos removes files whose media rows were captured before the
+// activity delete committed. The rows have cascaded by the time this runs.
+func (h *Handlers) RemovePhotos(_ context.Context, photos []db.Medium) error {
+	var failures []error
+	for _, photo := range photos {
+		if err := h.Service.Remove(photo.Kind, photo.ID); err != nil {
+			failures = append(failures, fmt.Errorf("media %d: %w", photo.ID, err))
+		}
+	}
+	return errors.Join(failures...)
+}
+
 // activityVisibleTo resolves the visibility of the activity a photo belongs to.
 func (h *Handlers) activityVisibleTo(ctx context.Context, activityID, viewerID int64) (bool, error) {
 	activity, err := h.Q.GetActivity(ctx, activityID)
