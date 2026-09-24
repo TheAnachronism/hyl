@@ -141,6 +141,7 @@ func serve() error {
 		return err
 	}
 	worker := syncpkg.NewWorker(pool, cfg, log, cipher, activityStore)
+	worker.SetSessions(authSvc)
 	worker.SetExporter(syncpkg.NewExporter(pool, cfg, log, cipher))
 	activityHandlers := activity.NewHandlers(pool, activityStore, mediaHandlers, log)
 	workerCtx, stopWorker := context.WithCancel(context.Background())
