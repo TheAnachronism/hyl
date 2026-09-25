@@ -22,8 +22,8 @@ import (
 )
 
 // TestServePhotoFollowsTheViewerRead is the photo allow matrix: a viewer can
-// fetch a photo exactly when ForViewer would open its activity, a hidden or
-// missing activity is the same not-found as a missing file, and avatars stay
+// fetch a photo exactly when VisibleActivity would open its activity, a hidden
+// or missing activity is the same not-found as a missing file, and avatars stay
 // public.
 func TestServePhotoFollowsTheViewerRead(t *testing.T) {
 	mediaHandlers, activities, queries := newServeHandlers(t)
@@ -74,7 +74,7 @@ func TestServePhotoFollowsTheViewerRead(t *testing.T) {
 			if viewer.user != nil {
 				viewerID = viewer.user.ID
 			}
-			_, readErr := activities.ForViewer(ctx, photo.activity, viewerID)
+			_, readErr := activities.VisibleActivity(ctx, photo.activity, viewerID)
 			rec := callServe(t, mediaHandlers, viewer.user, photo.id)
 			if readErr == nil {
 				if rec.Code != http.StatusOK {
@@ -118,7 +118,7 @@ func newServeHandlers(t *testing.T) (*media.Handlers, *activity.Handlers, *db.Qu
 	mediaHandlers := media.NewHandlers(svc, pool, zap.NewNop())
 	activities := activity.NewHandlers(pool, activity.NewStore(pool, zap.NewNop()), mediaHandlers, zap.NewNop())
 	mediaHandlers.ForViewer = func(ctx context.Context, activityID, viewerID int64) error {
-		_, err := activities.ForViewer(ctx, activityID, viewerID)
+		_, err := activities.VisibleActivity(ctx, activityID, viewerID)
 		return err
 	}
 	return mediaHandlers, activities, db.New(pool)

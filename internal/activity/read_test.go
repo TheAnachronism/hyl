@@ -17,9 +17,10 @@ import (
 	"github.com/markbeep/hyl/internal/reqctx"
 )
 
-// TestReadForViewerVisibility is the activity-page allow matrix. The owner
-// always opens the activity. An accepted follow is what grants followers
-// access. Everyone else gets the same not-found as a missing id.
+// TestReadForViewerVisibility is the activity-page allow matrix. VisibleActivity
+// and ForViewer agree. The owner always opens the activity. An accepted follow
+// is what grants followers access. Everyone else gets the same not-found as a
+// missing id.
 func TestReadForViewerVisibility(t *testing.T) {
 	handlers, queries := newListHandlers(t)
 	ctx := context.Background()
@@ -69,25 +70,38 @@ func TestReadForViewerVisibility(t *testing.T) {
 			}
 			for _, viewer := range viewers {
 				_, err := handlers.ForViewer(ctx, activity.ID, viewer.id)
+				row, visErr := handlers.VisibleActivity(ctx, activity.ID, viewer.id)
 				allowed := viewer.kind == "owner" || effective == "everyone" || (effective == "followers" && viewer.kind == "accepted")
 				if allowed {
 					if err != nil {
 						t.Errorf("account %s override %s viewer %s: %v, want the activity", account, override, viewer.name, err)
+					}
+					if visErr != nil || row.ID != activity.ID {
+						t.Errorf("account %s override %s viewer %s visible: %v id %d, want activity %d",
+							account, override, viewer.name, visErr, row.ID, activity.ID)
 					}
 					continue
 				}
 				if !sameNotFound(err) {
 					t.Errorf("account %s override %s viewer %s: %v, want not-found", account, override, viewer.name, err)
 				}
+				if !sameNotFound(visErr) {
+					t.Errorf("account %s override %s viewer %s visible: %v, want not-found", account, override, viewer.name, visErr)
+				}
 			}
 		}
 	}
 
 	_, missingErr := handlers.ForViewer(ctx, 999999, stranger.ID)
+	_, visMissing := handlers.VisibleActivity(ctx, 999999, stranger.ID)
 	secret := createListActivity(t, ctx, queries, owner.ID, "secret", "", 1000, "only_me", "secret")
 	_, hiddenErr := handlers.ForViewer(ctx, secret.ID, stranger.ID)
+	_, visHidden := handlers.VisibleActivity(ctx, secret.ID, stranger.ID)
 	if !sameNotFound(missingErr) || !sameNotFound(hiddenErr) || missingErr.Error() != hiddenErr.Error() {
 		t.Fatalf("missing %v and hidden %v must be the same not-found", missingErr, hiddenErr)
+	}
+	if !sameNotFound(visMissing) || !sameNotFound(visHidden) || visMissing.Error() != visHidden.Error() || visMissing.Error() != missingErr.Error() {
+		t.Fatalf("visible missing %v and hidden %v must be the same not-found as ForViewer", visMissing, visHidden)
 	}
 }
 
@@ -118,6 +132,9 @@ func TestReadForViewerTrimsTheMap(t *testing.T) {
 	if opened.Route[0] != wantStartLat || opened.Route[1] != 5 || opened.Route[len(opened.Route)-2] != wantEndLat {
 		t.Fatalf("route ends = %v … %v, want start %v and end %v",
 			opened.Route[:2], opened.Route[len(opened.Route)-2:], wantStartLat, wantEndLat)
+	}
+	if len(opened.Track) < 4 || opened.Track[0] != opened.Route[0] || opened.Track[len(opened.Track)-2] != opened.Route[len(opened.Route)-2] {
+		t.Fatalf("track ends = %v … %v, want the same trimmed ends as the route", opened.Track[:2], opened.Track[len(opened.Track)-2:])
 	}
 	ownerView, err := handlers.ForViewer(ctx, activity.ID, owner.ID)
 	if err != nil {

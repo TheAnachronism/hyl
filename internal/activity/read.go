@@ -22,36 +22,21 @@ type ViewerActivity struct {
 	MapAvailable bool
 }
 
-// ForViewer loads one activity for a viewer. Viewer id zero is anonymous. The
-// owner is always allowed. Otherwise the activity visibility, or the owner's
-// account default when the activity says default, plus an accepted follow,
-// decides. The route trim happens here, including a route the owner hid.
-func (h *Handlers) ForViewer(ctx context.Context, activityID, viewerID int64) (ViewerActivity, error) {
-	row, err := h.Q.GetActivity(ctx, activityID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ViewerActivity{}, apperr.NotFound("no such activity")
-	}
-	if err != nil {
-		return ViewerActivity{}, err
-	}
-	owner, err := h.Q.GetUserByID(ctx, row.UserID)
-	if err != nil {
-		return ViewerActivity{}, err
-	}
+// VisibleActivity reports whether the viewer may open the activity. It loads
+// the row, the owner and an accepted follow, and nothing else: no point stream
+// and no privacy trim. Viewer id zero is anonymous. A missing activity and an
+// activity this viewer cannot see are both not found.
+func (h *Handlers) VisibleActivity(ctx context.Context, activityID, viewerID int64) (db.Activity, error) {
+	row, _, err := h.visible(ctx, activityID, viewerID)
+	return row, err
+}
 
-	follower := false
-	if viewerID != 0 && viewerID != owner.ID {
-		follow, err := h.Q.GetFollow(ctx, viewerID, owner.ID)
-		switch {
-		case err == nil:
-			follower = follow.Status == "accepted"
-		case errors.Is(err, sql.ErrNoRows):
-		default:
-			return ViewerActivity{}, err
-		}
-	}
-	if !social.VisibilityAllows(viewerID, owner.ID, follower, row.Visibility, owner.ActivitiesVisibility) {
-		return ViewerActivity{}, apperr.NotFound("no such activity")
+// ForViewer loads one activity for a viewer. Visibility is VisibleActivity.
+// The route is trimmed once, then decimated to the list and detail budgets.
+func (h *Handlers) ForViewer(ctx context.Context, activityID, viewerID int64) (ViewerActivity, error) {
+	row, owner, err := h.visible(ctx, activityID, viewerID)
+	if err != nil {
+		return ViewerActivity{}, err
 	}
 
 	points, err := h.points(ctx, activityID)
@@ -62,18 +47,40 @@ func (h *Handlers) ForViewer(ctx context.Context, activityID, viewerID int64) (V
 	if err != nil {
 		return ViewerActivity{}, err
 	}
-	track, mapAvailable := TrackCoordinates(points, row.RouteHidden, zones, owner.TrimScope,
-		float64(owner.TrimRadiusM), row.DistanceM, listTrackPoints)
-	route, _ := TrackCoordinates(points, row.RouteHidden, zones, owner.TrimScope,
-		float64(owner.TrimRadiusM), row.DistanceM, detailRoutePoints)
-	if track == nil {
-		track = []float64{}
-	}
-	if route == nil {
-		route = []float64{}
-	}
+	track, route, mapAvailable := trimmedDisplayMaps(points, row.RouteHidden, zones, owner.TrimScope,
+		float64(owner.TrimRadiusM), row.DistanceM)
 	return ViewerActivity{
 		Activity: row, Owner: owner, Points: points,
 		Track: track, Route: route, MapAvailable: mapAvailable,
 	}, nil
+}
+
+func (h *Handlers) visible(ctx context.Context, activityID, viewerID int64) (db.Activity, db.User, error) {
+	row, err := h.Q.GetActivity(ctx, activityID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return db.Activity{}, db.User{}, apperr.NotFound("no such activity")
+	}
+	if err != nil {
+		return db.Activity{}, db.User{}, err
+	}
+	owner, err := h.Q.GetUserByID(ctx, row.UserID)
+	if err != nil {
+		return db.Activity{}, db.User{}, err
+	}
+
+	follower := false
+	if viewerID != 0 && viewerID != owner.ID {
+		follow, err := h.Q.GetFollow(ctx, viewerID, owner.ID)
+		switch {
+		case err == nil:
+			follower = follow.Status == "accepted"
+		case errors.Is(err, sql.ErrNoRows):
+		default:
+			return db.Activity{}, db.User{}, err
+		}
+	}
+	if !social.VisibilityAllows(viewerID, owner.ID, follower, row.Visibility, owner.ActivitiesVisibility) {
+		return db.Activity{}, db.User{}, apperr.NotFound("no such activity")
+	}
+	return row, owner, nil
 }

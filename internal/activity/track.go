@@ -13,8 +13,8 @@ const (
 // frontend. It returns mapAvailable false when the route must not be drawn at
 // all: no GPS, the owner hid the route, or privacy trimming left too little.
 //
-// Every caller funnels through here, so the privacy pipeline is applied exactly
-// once per response.
+// List rows use this with one budget. The activity-page read trims once, then
+// decimates to the list and detail budgets, so the two maps cannot disagree.
 func TrackCoordinates(points []Point, routeHidden bool, zones []Zone, trimScope string, trimRadiusM, fullDistanceM float64, maxPoints int) ([]float64, bool) {
 	if routeHidden {
 		return nil, false
@@ -25,6 +25,20 @@ func TrackCoordinates(points []Point, routeHidden bool, zones []Zone, trimScope 
 	}
 	kept = DecimateCoords(kept, maxPoints)
 	return FlattenCoords(kept), true
+}
+
+// trimmedDisplayMaps trims the route once, then decimates to the list and
+// detail budgets. Same maps as calling TrackCoordinates twice.
+func trimmedDisplayMaps(points []Point, routeHidden bool, zones []Zone, trimScope string, trimRadiusM, fullDistanceM float64) (track, route []float64, mapAvailable bool) {
+	if routeHidden {
+		return nil, nil, false
+	}
+	kept, hidden := TrimRoute(points, zones, trimScope, trimRadiusM, fullDistanceM)
+	if hidden {
+		return nil, nil, false
+	}
+	return FlattenCoords(DecimateCoords(kept, listTrackPoints)),
+		FlattenCoords(DecimateCoords(kept, detailRoutePoints)), true
 }
 
 // FlattenCoords renders points as [lat,lon,…] with five decimal places, which

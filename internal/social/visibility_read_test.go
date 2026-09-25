@@ -24,9 +24,11 @@ import (
 )
 
 // TestLikesAndCommentsFollowTheViewerRead is the social allow matrix: like,
-// comment, and listing comments are allowed exactly when ForViewer would open
-// the activity. A deny writes nothing. Repeated likes stay idempotent, and
-// only the author can delete a comment.
+// comment, and listing comments are allowed exactly when VisibleActivity would
+// open the activity. A deny writes nothing. Anonymous GET comments follow the
+// same gate. The owner can comment and list an only_me activity but cannot
+// like it. Repeated likes stay idempotent, and only the author can delete a
+// comment.
 func TestLikesAndCommentsFollowTheViewerRead(t *testing.T) {
 	handlers, activities, queries := newSocialHandlers(t)
 	ctx := context.Background()
@@ -65,11 +67,11 @@ func TestLikesAndCommentsFollowTheViewerRead(t *testing.T) {
 
 	for _, row := range rows {
 		for _, viewer := range viewers {
-			_, readErr := activities.ForViewer(ctx, row.activity.ID, viewer.user.ID)
+			_, readErr := activities.VisibleActivity(ctx, row.activity.ID, viewer.user.ID)
 			before := socialCounts(t, queries, row.activity.ID, owner.ID)
 			likeRec := callSocial(t, handlers.Like, &viewer.user, map[string]string{"id": itoa(row.activity.ID)}, "")
 			commentRec := callSocial(t, handlers.PostComment, &viewer.user, map[string]string{"id": itoa(row.activity.ID)}, `{"body":"nice"}`)
-			listRec := callSocial(t, handlers.ListComments, &viewer.user, map[string]string{"id": itoa(row.activity.ID)}, "")
+			listRec := callSocialGet(t, handlers.ListComments, &viewer.user, map[string]string{"id": itoa(row.activity.ID)})
 			if readErr == nil {
 				if likeRec.Code != http.StatusOK {
 					t.Errorf("%s like viewer %s: %d %s, want allowed", row.name, viewer.name, likeRec.Code, likeRec.Body.String())
@@ -90,8 +92,38 @@ func TestLikesAndCommentsFollowTheViewerRead(t *testing.T) {
 		}
 	}
 
-	hiddenList := callSocial(t, handlers.ListComments, &stranger, map[string]string{"id": itoa(onlyMe.ID)}, "")
-	missingList := callSocial(t, handlers.ListComments, &stranger, map[string]string{"id": itoa(onlyMe.ID + 99)}, "")
+	anonEveryone := callSocialGet(t, handlers.ListComments, nil, map[string]string{"id": itoa(everyone.ID)})
+	if anonEveryone.Code != http.StatusOK {
+		t.Fatalf("anonymous everyone list: %d %s, want 200", anonEveryone.Code, anonEveryone.Body.String())
+	}
+	anonFollowers := callSocialGet(t, handlers.ListComments, nil, map[string]string{"id": itoa(followers.ID)})
+	anonOnlyMe := callSocialGet(t, handlers.ListComments, nil, map[string]string{"id": itoa(onlyMe.ID)})
+	if anonFollowers.Code != http.StatusNotFound || anonOnlyMe.Code != http.StatusNotFound {
+		t.Fatalf("anonymous followers list %d %s, only_me %d %s, want not-found",
+			anonFollowers.Code, anonFollowers.Body.String(), anonOnlyMe.Code, anonOnlyMe.Body.String())
+	}
+
+	ownerParams := map[string]string{"id": itoa(onlyMe.ID)}
+	ownerBefore := socialCounts(t, queries, onlyMe.ID, owner.ID)
+	ownerComment := callSocial(t, handlers.PostComment, &owner, ownerParams, `{"body":"mine"}`)
+	if ownerComment.Code != http.StatusCreated {
+		t.Fatalf("owner only_me comment: %d %s, want 201", ownerComment.Code, ownerComment.Body.String())
+	}
+	ownerList := callSocialGet(t, handlers.ListComments, &owner, ownerParams)
+	if ownerList.Code != http.StatusOK {
+		t.Fatalf("owner only_me list: %d %s, want 200", ownerList.Code, ownerList.Body.String())
+	}
+	ownerLike := callSocial(t, handlers.Like, &owner, ownerParams, "")
+	if ownerLike.Code != http.StatusForbidden {
+		t.Fatalf("owner only_me like: %d %s, want 403", ownerLike.Code, ownerLike.Body.String())
+	}
+	ownerAfter := socialCounts(t, queries, onlyMe.ID, owner.ID)
+	if ownerAfter.likes != ownerBefore.likes {
+		t.Fatalf("owner only_me like wrote records: before %+v after %+v", ownerBefore, ownerAfter)
+	}
+
+	hiddenList := callSocialGet(t, handlers.ListComments, &stranger, map[string]string{"id": itoa(onlyMe.ID)})
+	missingList := callSocialGet(t, handlers.ListComments, &stranger, map[string]string{"id": itoa(onlyMe.ID + 99)})
 	if hiddenList.Code != http.StatusNotFound || missingList.Code != http.StatusNotFound || hiddenList.Body.String() != missingList.Body.String() {
 		t.Fatalf("hidden list %d %s, missing list %d %s", hiddenList.Code, hiddenList.Body.String(), missingList.Code, missingList.Body.String())
 	}
@@ -145,7 +177,7 @@ func TestDeniedViewerReadWritesNothing(t *testing.T) {
 	before := socialCounts(t, queries, activity.ID, owner.ID)
 	like := callSocial(t, handlers.Like, &stranger, map[string]string{"id": itoa(activity.ID)}, "")
 	comment := callSocial(t, handlers.PostComment, &stranger, map[string]string{"id": itoa(activity.ID)}, `{"body":"hello"}`)
-	list := callSocial(t, handlers.ListComments, &stranger, map[string]string{"id": itoa(activity.ID)}, "")
+	list := callSocialGet(t, handlers.ListComments, &stranger, map[string]string{"id": itoa(activity.ID)})
 	assertDenied(t, "like", like, before, socialCounts(t, queries, activity.ID, owner.ID))
 	assertDenied(t, "comment", comment, before, socialCounts(t, queries, activity.ID, owner.ID))
 	if list.Code != http.StatusNotFound {
@@ -165,13 +197,7 @@ func newSocialHandlers(t *testing.T) (*social.Handlers, *activity.Handlers, *db.
 	}
 	activities := activity.NewHandlers(pool, activity.NewStore(pool, zap.NewNop()), nil, zap.NewNop())
 	handlers := social.New(pool, zap.NewNop())
-	handlers.ForViewer = func(ctx context.Context, activityID, viewerID int64) (db.Activity, error) {
-		opened, err := activities.ForViewer(ctx, activityID, viewerID)
-		if err != nil {
-			return db.Activity{}, err
-		}
-		return opened.Activity, nil
-	}
+	handlers.ForViewer = activities.VisibleActivity
 	return handlers, activities, db.New(pool)
 }
 
@@ -211,8 +237,18 @@ func createSocialActivity(t *testing.T, ctx context.Context, queries *db.Queries
 
 func callSocial(t *testing.T, handler echo.HandlerFunc, user *db.User, params map[string]string, body string) *httptest.ResponseRecorder {
 	t.Helper()
+	return callSocialReq(t, http.MethodPost, handler, user, params, body)
+}
+
+func callSocialGet(t *testing.T, handler echo.HandlerFunc, user *db.User, params map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	return callSocialReq(t, http.MethodGet, handler, user, params, "")
+}
+
+func callSocialReq(t *testing.T, method string, handler echo.HandlerFunc, user *db.User, params map[string]string, body string) *httptest.ResponseRecorder {
+	t.Helper()
 	e := echo.New()
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req := httptest.NewRequest(method, "/", strings.NewReader(body))
 	if body != "" {
 		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	}

@@ -67,7 +67,7 @@ func (h *Handlers) Like(c echo.Context) error {
 // visibleActivity loads an activity the viewer is allowed to see. An invisible
 // activity is reported as missing rather than forbidden, so the endpoint cannot
 // be used to probe for private ids. The owner and follow are loaded by the
-// activity-page read, not here.
+// injected read, not here.
 func (h *Handlers) visibleActivity(ctx context.Context, activityID, viewerID int64) (db.Activity, error) {
 	if h.ForViewer == nil {
 		return db.Activity{}, apperr.NotFound("no such activity")

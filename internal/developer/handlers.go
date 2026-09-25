@@ -74,22 +74,15 @@ func (h *Handlers) Get(c echo.Context) error {
 	}
 	ctx := c.Request().Context()
 
-	row, err := h.Q.GetActivity(ctx, activityID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return apperr.NotFound("no such activity")
-	}
+	opened, err := h.Activity.ForViewer(ctx, activityID, user.ID)
 	if err != nil {
 		return err
 	}
 	// A key never reaches another account's data, whatever the visibility says.
-	if row.UserID != user.ID {
+	if opened.Activity.UserID != user.ID {
 		return apperr.NotFound("no such activity")
 	}
 
-	points, err := h.Q.ListActivityPoints(ctx, activityID)
-	if err != nil {
-		return err
-	}
 	avatarID, err := h.avatarID(ctx, user.ID)
 	if err != nil {
 		return err
@@ -107,18 +100,13 @@ func (h *Handlers) Get(c echo.Context) error {
 
 	// The key stays owner-only above. The summary map is the activity-page route,
 	// so privacy zones, start and end trimming, and a hidden route match that page.
-	opened, err := h.Activity.ForViewer(ctx, activityID, user.ID)
-	if err != nil {
-		return err
-	}
-	track, mapAvailable := opened.Route, opened.MapAvailable
-	summary := dto.ActivitySummaryFromActivity(row, *user, avatarID, counts, track, mapAvailable, nil)
+	summary := dto.ActivitySummaryFromActivity(opened.Activity, opened.Owner, avatarID, counts, opened.Route, opened.MapAvailable, nil)
 
 	return c.JSON(http.StatusOK, api.DeveloperActivity{
 		ActivitySummary: summary,
-		Source:          row.Source,
-		SourceRef:       row.SourceRef,
-		Points:          toDeveloperPoints(points),
+		Source:          opened.Activity.Source,
+		SourceRef:       opened.Activity.SourceRef,
+		Points:          toDeveloperPoints(opened.Points),
 	})
 }
 
@@ -133,7 +121,7 @@ func (h *Handlers) avatarID(ctx context.Context, userID int64) (int64, error) {
 	return avatar.ID, nil
 }
 
-func toDeveloperPoints(rows []db.ActivityPoint) []api.DeveloperPoint {
+func toDeveloperPoints(rows []activity.Point) []api.DeveloperPoint {
 	points := make([]api.DeveloperPoint, 0, len(rows))
 	for _, row := range rows {
 		points = append(points, api.DeveloperPoint{
@@ -143,12 +131,20 @@ func toDeveloperPoints(rows []db.ActivityPoint) []api.DeveloperPoint {
 			Lat:        row.Lat,
 			Lon:        row.Lon,
 			ElevationM: row.Ele,
-			HeartRate:  row.Hr,
-			Cadence:    row.Cad,
-			PowerW:     row.Pwr,
+			HeartRate:  int64Ptr(row.HR),
+			Cadence:    int64Ptr(row.Cad),
+			PowerW:     int64Ptr(row.Pwr),
 			SpeedMps:   row.Spd,
 			DistanceM:  row.DistM,
 		})
 	}
 	return points
+}
+
+func int64Ptr(value *int) *int64 {
+	if value == nil {
+		return nil
+	}
+	converted := int64(*value)
+	return &converted
 }

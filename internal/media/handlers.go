@@ -39,9 +39,10 @@ type Handlers struct {
 	Service *Service
 	Q       *db.Queries
 	Log     *zap.Logger
-	// ForViewer is the activity-page read. Activity photos use it only for
-	// allow or deny; avatars skip it. Production always sets it; a missing
-	// read fails closed.
+	// ForViewer is required. The zero value is unusable: a nil function treats
+	// every activity photo as a missing file, so a forgotten wiring cannot
+	// leak photos. Production and tests must set it before serving activity
+	// photos; avatars skip it.
 	ForViewer func(ctx context.Context, activityID, viewerID int64) error
 }
 
