@@ -33,6 +33,11 @@ type Connections struct {
 	tokenBase string
 }
 
+// NewConnections builds the shared provider connection operations.
+func NewConnections(pool *sql.DB, cfg config.Config, log *zap.Logger, cipher *secrets.Cipher) *Connections {
+	return &Connections{Pool: pool, Q: db.New(pool), Cfg: cfg, Log: log, Cipher: cipher}
+}
+
 // Disconnect removes one provider kind: its connection, its import rules, and,
 // only when the kind owns an export target, the pending exports for that
 // target. The three deletes commit together. A user-initiated OAuth disconnect

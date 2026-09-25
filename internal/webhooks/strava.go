@@ -44,10 +44,10 @@ type Strava struct {
 
 // NewStrava builds the Strava webhook handler.
 func NewStrava(pool *sql.DB, cfg config.Config, log *zap.Logger, cipher *secrets.Cipher) *Strava {
-	q := db.New(pool)
+	connections := syncpkg.NewConnections(pool, cfg, log, cipher)
 	return &Strava{
-		Q: q, Cfg: cfg, Log: log,
-		connections: &syncpkg.Connections{Pool: pool, Q: q, Cfg: cfg, Log: log, Cipher: cipher},
+		Q: connections.Q, Cfg: cfg, Log: log,
+		connections: connections,
 	}
 }
 

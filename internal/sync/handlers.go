@@ -261,7 +261,7 @@ func (h *Handlers) DeleteConnection(c echo.Context) error {
 	if err != nil {
 		return err
 	}
-	connections := &Connections{Pool: h.Pool, Q: h.Q, Cfg: h.Cfg, Log: h.Log, Cipher: h.Cipher}
+	connections := NewConnections(h.Pool, h.Cfg, h.Log, h.Cipher)
 	if err := connections.Disconnect(c.Request().Context(), user.ID, c.Param("kind")); err != nil {
 		return err
 	}

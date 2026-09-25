@@ -47,9 +47,6 @@ type Exporter struct {
 	Cipher      *secrets.Cipher
 	connections *Connections
 
-	// tokenBaseURL is the OAuth endpoint used for refreshes; tests point it at
-	// a fake server.
-	tokenBaseURL string
 	// newClient is a seam for tests.
 	newClient func(accessToken string) *StravaClient
 	// sleep is overridable so tests do not wait for the pacing delays.
@@ -64,13 +61,12 @@ type Exporter struct {
 
 // NewExporter builds the export drainer.
 func NewExporter(pool *sql.DB, cfg config.Config, log *zap.Logger, cipher *secrets.Cipher) *Exporter {
-	q := db.New(pool)
+	connections := NewConnections(pool, cfg, log, cipher)
 	return &Exporter{
-		Q: q, Cfg: cfg, Log: log, Cipher: cipher,
-		tokenBaseURL: stravaOAuthBase(cfg),
-		connections:  &Connections{Pool: pool, Q: q, Cfg: cfg, Log: log, Cipher: cipher},
-		newClient:    func(token string) *StravaClient { return NewStravaClient(cfg, token) },
-		sleep:        sleepContext,
+		Q: connections.Q, Cfg: cfg, Log: log, Cipher: cipher,
+		connections: connections,
+		newClient:   func(token string) *StravaClient { return NewStravaClient(cfg, token) },
+		sleep:       sleepContext,
 	}
 }
 
@@ -125,9 +121,6 @@ func (e *Exporter) exportOne(ctx context.Context, row db.ActivityExport) (stop b
 	}
 
 	now := time.Now()
-	e.connections.Cfg = e.Cfg
-	e.connections.Log = e.Log
-	e.connections.tokenBase = e.tokenBaseURL
 	conn, err = e.connections.Refresh(ctx, conn, now)
 	if err != nil {
 		if stravaRejectedCredential(err) {
