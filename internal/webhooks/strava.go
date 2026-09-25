@@ -100,8 +100,11 @@ func (h *Strava) Handle(c echo.Context) error {
 		return c.NoContent(http.StatusOK)
 	}
 	if err := h.connections.Deauthorize(ctx, conn); err != nil {
+		// Acknowledge after logging: a 500 cannot usefully retry because
+		// claimDue already started the cooldown, and a retry after a
+		// rotated-but-unstored pair would look like a genuine revocation.
 		h.Log.Error("confirming the strava deauthorization failed", zap.Error(err), zap.Int64("user_id", conn.UserID))
-		return err
+		return c.NoContent(http.StatusOK)
 	}
 	return c.NoContent(http.StatusOK)
 }

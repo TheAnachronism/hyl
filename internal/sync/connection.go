@@ -68,13 +68,20 @@ func (c *Connections) Deauthorize(ctx context.Context, conn db.Connection) error
 	tokens, err := refreshStravaToken(ctx, base, c.Cfg, refreshToken)
 	if err != nil {
 		if stravaRejectedCredential(err) {
-			return c.remove(ctx, conn.UserID, conn.Kind)
+			if err := c.remove(ctx, conn.UserID, conn.Kind); err != nil {
+				return err
+			}
+			c.Log.Info("strava connection removed after deauthorization", zap.Int64("user_id", conn.UserID))
+			return nil
 		}
 		c.Log.Warn("could not confirm a strava deauthorization", zap.Error(err))
 		return nil
 	}
-	_, err = c.storeRotated(ctx, conn, tokens, time.Now())
-	return err
+	if _, err = c.storeRotated(ctx, conn, tokens, time.Now()); err != nil {
+		return err
+	}
+	c.Log.Info("ignored an unconfirmed strava deauthorization", zap.Int64("user_id", conn.UserID))
+	return nil
 }
 
 // remove deletes one provider kind, its import rules, and, only when the kind

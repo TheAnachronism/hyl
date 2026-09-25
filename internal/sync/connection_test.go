@@ -324,6 +324,8 @@ func TestDisconnectKeepsLocalRemovalWhenRevokeFails(t *testing.T) {
 
 func TestConfirmedStravaDeauthorizationRemovesConnectionWithoutRevoking(t *testing.T) {
 	h := newDisconnectHarness(t)
+	core, logs := observer.New(zapcore.InfoLevel)
+	h.connections.Log = zap.New(core)
 	h.tokenStatus = http.StatusBadRequest
 	h.tokenBody = `{"message":"Bad Request","errors":[{"resource":"RefreshToken","field":"refresh_token","code":"invalid"}]}`
 	ctx := context.Background()
@@ -378,10 +380,15 @@ func TestConfirmedStravaDeauthorizationRemovesConnectionWithoutRevoking(t *testi
 	if h.revokes != 0 {
 		t.Fatalf("provider revoke calls = %d, want the deauthorization not to revoke again", h.revokes)
 	}
+	if logs.FilterMessage("strava connection removed after deauthorization").Len() != 1 {
+		t.Fatal("want the confirmed removal logged")
+	}
 }
 
 func TestForgedStravaDeauthorizationKeepsConnectionAndStoresRotation(t *testing.T) {
 	h := newDisconnectHarness(t)
+	core, logs := observer.New(zapcore.InfoLevel)
+	h.connections.Log = zap.New(core)
 	h.tokenBody = `{"access_token":"access-2","refresh_token":"refresh-2","expires_at":1893456000}`
 	ctx := context.Background()
 	conn, err := h.queries.GetConnection(ctx, h.user.ID, KindStravaOAuth)
@@ -412,6 +419,9 @@ func TestForgedStravaDeauthorizationKeepsConnectionAndStoresRotation(t *testing.
 	}
 	if h.revokes != 0 {
 		t.Fatalf("provider revoke calls = %d, want none", h.revokes)
+	}
+	if logs.FilterMessage("ignored an unconfirmed strava deauthorization").Len() != 1 {
+		t.Fatal("want the ignored claim logged")
 	}
 }
 
@@ -448,6 +458,32 @@ func TestTransientStravaDeauthorizationChangesNothing(t *testing.T) {
 	}
 	if h.revokes != 0 {
 		t.Fatalf("provider revoke calls = %d, want none", h.revokes)
+	}
+}
+
+func TestMisconfiguredStravaClientDoesNotConfirmDeauthorization(t *testing.T) {
+	h := newDisconnectHarness(t)
+	h.tokenStatus = http.StatusBadRequest
+	h.tokenBody = `{"message":"Bad Request","errors":[{"resource":"Application","field":"client_id","code":"invalid"}]}`
+	ctx := context.Background()
+	conn, err := h.queries.GetConnection(ctx, h.user.ID, KindStravaOAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.connections.Deauthorize(ctx, conn); err != nil {
+		t.Fatalf("deauthorize: %v", err)
+	}
+
+	if _, err := h.queries.GetConnection(ctx, h.user.ID, KindStravaOAuth); err != nil {
+		t.Fatalf("strava connection: %v", err)
+	}
+	stored, err := h.cipher.DecryptString(mustConnection(t, h, ctx).RefreshTokenCipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored != "strava-refresh" {
+		t.Fatalf("stored refresh token = %q, want the original pair", stored)
 	}
 }
 

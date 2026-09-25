@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -543,5 +544,90 @@ func TestExportMarksReauthorizeWhenStravaRejectsRefresh(t *testing.T) {
 	}
 	if conn.LastError == nil || *conn.LastError != "reauthorize" {
 		t.Fatalf("connection last error = %v, want reauthorize", conn.LastError)
+	}
+}
+
+func TestStravaRejectedCredential(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "invalid refresh token",
+			err: &ProviderError{
+				StatusCode: http.StatusBadRequest,
+				Message:    `strava rejected the token request (400): {"message":"Bad Request","errors":[{"resource":"RefreshToken","field":"refresh_token","code":"invalid"}]}`,
+			},
+			want: true,
+		},
+		{
+			name: "bad client id",
+			err: &ProviderError{
+				StatusCode: http.StatusBadRequest,
+				Message:    `strava rejected the token request (400): {"message":"Bad Request","errors":[{"resource":"Application","field":"client_id","code":"invalid"}]}`,
+			},
+			want: false,
+		},
+		{
+			name: "unauthorized",
+			err:  &ProviderError{StatusCode: http.StatusUnauthorized, Message: "strava rejected the token request (401)"},
+			want: true,
+		},
+		{
+			name: "forbidden",
+			err:  &ProviderError{StatusCode: http.StatusForbidden, Message: "strava rejected the token request (403)"},
+			want: true,
+		},
+		{
+			name: "server error",
+			err:  &ProviderError{StatusCode: http.StatusInternalServerError, Message: "unavailable"},
+			want: false,
+		},
+		{
+			name: "plain error",
+			err:  errors.New("network"),
+			want: false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := stravaRejectedCredential(test.err); got != test.want {
+				t.Fatalf("stravaRejectedCredential() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestExportDoesNotParkWhenStravaRejectsClientCredentials(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"message":"Bad Request","errors":[{"resource":"Application","field":"client_id","code":"invalid"}]}`))
+	}))
+	defer server.Close()
+
+	harness := newExportHarness(t)
+	harness.exporter.tokenBaseURL = server.URL
+	harness.exporter.Cfg.StravaClientID = "client-id"
+	harness.exporter.Cfg.StravaClientSecret = "client-secret"
+
+	harness.exporter.Drain(context.Background())
+
+	row, err := harness.queries.GetExport(context.Background(), harness.activity.ID, exportTargetStrava)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Status != exportStatusPending {
+		t.Fatalf("status = %q, want pending after a configuration failure", row.Status)
+	}
+	if row.LastError != nil && *row.LastError == "reauthorize" {
+		t.Fatal("a client credential failure marked the export as needing reauthorization")
+	}
+	conn, err := harness.queries.GetConnection(context.Background(), harness.user.ID, KindStravaOAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conn.LastError != nil && *conn.LastError == "reauthorize" {
+		t.Fatal("a client credential failure parked a healthy connection")
 	}
 }

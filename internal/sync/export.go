@@ -193,19 +193,28 @@ func (e *Exporter) exportOne(ctx context.Context, row db.ActivityExport) (stop b
 }
 
 // stravaRejectedCredential reports a token response that means the stored
-// refresh token is no longer accepted. Strava uses 400 for an invalid refresh
-// token, and 401 or 403 when the grant is gone.
+// refresh token is no longer accepted. Strava answers 400 with a RefreshToken
+// error for an invalid refresh token; a 400 for a bad client id or secret is a
+// configuration failure and must not park or delete a healthy connection.
+// 401 and 403 mean the grant is gone.
 func stravaRejectedCredential(err error) bool {
 	var providerErr *ProviderError
 	if !errors.As(err, &providerErr) {
 		return false
 	}
 	switch providerErr.StatusCode {
-	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden:
+	case http.StatusUnauthorized, http.StatusForbidden:
 		return true
+	case http.StatusBadRequest:
+		return stravaInvalidRefreshToken(providerErr.Message)
 	default:
 		return false
 	}
+}
+
+func stravaInvalidRefreshToken(message string) bool {
+	lower := strings.ToLower(message)
+	return strings.Contains(lower, "refreshtoken") || strings.Contains(lower, "refresh_token")
 }
 
 // markConnectionReauthorize parks the Strava connection until the athlete
@@ -219,7 +228,6 @@ func (e *Exporter) markConnectionReauthorize(ctx context.Context, conn db.Connec
 }
 
 // handleProviderError classifies a provider failure.
-
 func (e *Exporter) handleProviderError(ctx context.Context, row db.ActivityExport, err error) (bool, error) {
 	var providerErr *ProviderError
 	if !errors.As(err, &providerErr) {

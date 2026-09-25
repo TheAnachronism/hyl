@@ -131,16 +131,6 @@ func refreshStravaToken(ctx context.Context, baseURL string, cfg config.Config, 
 	return stravaTokenRequest(ctx, baseURL, form)
 }
 
-// CheckStravaRefresh rotates a stored Strava refresh token for a caller that
-// only needs to know whether the connection is still alive. It exists because
-// Strava signs nothing it sends to a webhook, while its token endpoint is
-// authoritative: a revoked connection's refresh token is rejected outright,
-// whereas a live one is simply rotated (and the caller must persist the pair,
-// since Strava invalidates the previous refresh token immediately).
-func CheckStravaRefresh(ctx context.Context, cfg config.Config, refreshToken string) (StravaTokens, error) {
-	return refreshStravaToken(ctx, stravaOAuthBase(cfg), cfg, refreshToken)
-}
-
 // StravaAuthorizeURL builds the consent URL.
 func StravaAuthorizeURL(cfg config.Config, state string) string {
 	query := url.Values{}
